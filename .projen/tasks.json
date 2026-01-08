@@ -104,17 +104,12 @@
         }
       ]
     },
-    "eslint": {
-      "name": "eslint",
-      "description": "Runs eslint against the codebase",
-      "env": {
-        "ESLINT_USE_FLAT_CONFIG": "false",
-        "NODE_NO_WARNINGS": "1"
-      },
+    "format": {
+      "name": "format",
+      "description": "Format code with Biome",
       "steps": [
         {
-          "exec": "eslint --ext .ts,.tsx --fix --no-error-on-unmatched-pattern $@ src test build-tools projenrc .projenrc.ts",
-          "receiveArgs": true
+          "exec": "biome format --write ."
         }
       ]
     },
@@ -133,6 +128,24 @@
       "steps": [
         {
           "exec": "bun install --frozen-lockfile"
+        }
+      ]
+    },
+    "lint": {
+      "name": "lint",
+      "description": "Run Biome linter",
+      "steps": [
+        {
+          "exec": "biome check ."
+        }
+      ]
+    },
+    "lint:fix": {
+      "name": "lint:fix",
+      "description": "Fix linting issues with Biome",
+      "steps": [
+        {
+          "exec": "biome check --write ."
         }
       ]
     },
@@ -191,9 +204,6 @@
         {
           "exec": "jest --passWithNoTests --updateSnapshot",
           "receiveArgs": true
-        },
-        {
-          "spawn": "eslint"
         }
       ]
     },
@@ -231,13 +241,13 @@
       },
       "steps": [
         {
-          "exec": "bunx npm-check-updates@18 --upgrade --target=minor --peer --no-deprecated --dep=dev,peer,prod,optional --filter=@types/jest,@types/node,eslint-import-resolver-typescript,eslint-plugin-import,jest,projen,ts-jest,ts-node,typescript"
+          "exec": "bunx npm-check-updates@18 --upgrade --target=minor --peer --no-deprecated --dep=dev,peer,prod,optional --filter=@biomejs/biome,@types/jest,@types/node,jest,projen,ts-jest,ts-node,typescript"
         },
         {
           "exec": "bun install"
         },
         {
-          "exec": "bun update @stylistic/eslint-plugin @types/jest @types/node @typescript-eslint/eslint-plugin @typescript-eslint/parser commit-and-tag-version constructs eslint-import-resolver-typescript eslint-plugin-import eslint jest jest-junit projen ts-jest ts-node typescript"
+          "exec": "bun update @biomejs/biome @types/jest @types/node commit-and-tag-version constructs jest jest-junit projen ts-jest ts-node typescript"
         },
         {
           "exec": "npx projen"
