@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bunx effect-solutions:*)",
+      "WebFetch(domain:effect-ts.github.io)",
+      "WebFetch(domain:effect.website)",
+      "WebFetch(domain:www.effect.solutions)",
+      "WebSearch"
+    ]
+  }
+}

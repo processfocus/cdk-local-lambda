@@ -1,0 +1,5 @@
+* refactor: move bootstrap to separate commands/ directory
+* handler.ts: don't replace endpoints at deploy time: use SSM parameters to pick them up
+* Send patch to CDK to make entry & hander visible.
+* Do not always deploy bootstrap: simply check version
+* Our bootstrap command should simply use the "compiled" yaml bootstrap, not run cdk
