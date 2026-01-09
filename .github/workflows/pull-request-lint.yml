@@ -27,4 +27,6 @@ jobs:
             feat
             fix
             chore
+            refactor
+            vendor
           requireScope: false

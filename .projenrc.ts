@@ -52,6 +52,7 @@ const project = new typescript.TypeScriptProject({
     "@types/aws-lambda",
     "@types/ws",
     "@types/bun",
+    "husky",
   ],
 
   // Use bun to run projenrc for ESM compatibility
@@ -81,5 +82,16 @@ project.package.addField("type", "module")
 
 // Add CDK and direnv files to gitignore
 project.gitignore.addPatterns("cdk.out/", ".envrc")
+
+// Add husky prepare script for git hooks
+project.package.setScript("prepare", "husky")
+
+// Configure PR title validation - allowed conventional commit types
+project.github
+  ?.tryFindWorkflow("pull-request-lint")
+  ?.file?.addOverride(
+    "jobs.validate.steps.0.with.types",
+    "feat\nfix\nchore\nrefactor\nvendor",
+  )
 
 project.synth()
