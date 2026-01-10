@@ -4,15 +4,9 @@
 
 /**
  * SSM parameter paths for Live Lambda infrastructure
+ * Base path for all Live Lambda SSM parameters
  */
-export const SSM_PARAMS = {
-  HTTP_ENDPOINT: "/cdk-local-lambda/http-endpoint",
-  REALTIME_ENDPOINT: "/cdk-local-lambda/realtime-endpoint",
-  API_ARN: "/cdk-local-lambda/api-arn",
-  API_ID: "/cdk-local-lambda/api-id",
-  BRIDGE_BUCKET: "/cdk-local-lambda/bridge-bucket",
-  BRIDGE_KEY: "/cdk-local-lambda/bridge-key",
-} as const
+export const SSM_BASE_PATH = "/cdk-local-lambda"
 
 /**
  * Tag key used to store the local handler path on Lambda functions

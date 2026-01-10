@@ -15,7 +15,7 @@ import * as iam from "aws-cdk-lib/aws-iam"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import type { IConstruct } from "constructs"
-import { LIVE_LAMBDA_TAG, SSM_PARAMS } from "../shared/types.js"
+import { LIVE_LAMBDA_TAG, SSM_BASE_PATH } from "../shared/types.js"
 import { getEntryPath, getHandlerName } from "./nodejs-function-hook.js"
 
 // Regex to strip file extension from entry path
@@ -182,17 +182,23 @@ export class LiveLambdaAspect implements cdk.IAspect {
     const stack = cdk.Stack.of(fn)
 
     // Read values from SSM parameters (created by bootstrap stack)
+    // Use the CDK bootstrap qualifier for proper scoping
+    const bootstrapQualifier =
+      stack.node.tryGetContext("@aws-cdk/core:bootstrapQualifier") ||
+      "hnb659fds"
+    const ssmBasePath = `${SSM_BASE_PATH}/${bootstrapQualifier}`
+
     const apiArn = ssm.StringParameter.valueForStringParameter(
       stack,
-      SSM_PARAMS.API_ARN,
+      `${ssmBasePath}/api-arn`,
     )
     const bridgeBucket = ssm.StringParameter.valueForStringParameter(
       stack,
-      SSM_PARAMS.BRIDGE_BUCKET,
+      `${ssmBasePath}/bridge-bucket`,
     )
     const bridgeKey = ssm.StringParameter.valueForStringParameter(
       stack,
-      SSM_PARAMS.BRIDGE_KEY,
+      `${ssmBasePath}/bridge-key`,
     )
 
     // Add tag with local handler path for daemon discovery

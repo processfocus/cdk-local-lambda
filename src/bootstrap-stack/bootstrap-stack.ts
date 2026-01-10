@@ -11,7 +11,7 @@ import * as s3 from "aws-cdk-lib/aws-s3"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import * as cr from "aws-cdk-lib/custom-resources"
 import type { Construct } from "constructs"
-import { SSM_PARAMS } from "../shared/types.js"
+import { SSM_BASE_PATH } from "../shared/types.js"
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -150,26 +150,31 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
 
     // Create SSM parameters for the endpoints
     // These are used by the live-lambda-aspect to configure Lambda functions
+    // Use the CDK bootstrap qualifier for proper scoping
+    const bootstrapQualifier =
+      this.node.tryGetContext("@aws-cdk/core:bootstrapQualifier") || "hnb659fds"
+    const ssmBasePath = `${SSM_BASE_PATH}/${bootstrapQualifier}`
+
     new ssm.StringParameter(this, "HttpEndpointParam", {
-      parameterName: SSM_PARAMS.HTTP_ENDPOINT,
+      parameterName: `${ssmBasePath}/http-endpoint`,
       stringValue: this.httpEndpoint,
       description: "AppSync Events HTTP endpoint for Live Lambda",
     })
 
     new ssm.StringParameter(this, "RealtimeEndpointParam", {
-      parameterName: SSM_PARAMS.REALTIME_ENDPOINT,
+      parameterName: `${ssmBasePath}/realtime-endpoint`,
       stringValue: this.realtimeEndpoint,
       description: "AppSync Events WebSocket endpoint for Live Lambda",
     })
 
     new ssm.StringParameter(this, "ApiArnParam", {
-      parameterName: SSM_PARAMS.API_ARN,
+      parameterName: `${ssmBasePath}/api-arn`,
       stringValue: this.api.attrApiArn,
       description: "AppSync Events API ARN for Live Lambda",
     })
 
     new ssm.StringParameter(this, "ApiIdParam", {
-      parameterName: SSM_PARAMS.API_ID,
+      parameterName: `${ssmBasePath}/api-id`,
       stringValue: this.api.attrApiId,
       description: "AppSync Events API ID for Live Lambda",
     })
@@ -179,13 +184,13 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
 
     // Store bridge S3 location in SSM
     new ssm.StringParameter(this, "BridgeBucketParam", {
-      parameterName: SSM_PARAMS.BRIDGE_BUCKET,
+      parameterName: `${ssmBasePath}/bridge-bucket`,
       stringValue: bridgeS3Location.bucketName,
       description: "S3 bucket containing Live Lambda bridge code",
     })
 
     new ssm.StringParameter(this, "BridgeKeyParam", {
-      parameterName: SSM_PARAMS.BRIDGE_KEY,
+      parameterName: `${ssmBasePath}/bridge-key`,
       stringValue: bridgeS3Location.s3Key,
       description: "S3 key for Live Lambda bridge code",
     })
