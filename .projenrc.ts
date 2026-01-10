@@ -6,6 +6,7 @@ const project = new typescript.TypeScriptProject({
   packageManager: javascript.NodePackageManager.BUN,
   projenrcTs: true,
   eslint: false,
+  jest: false, // Use Bun's built-in test runner instead
 
   // Enable ESM package type
   entrypoint: "lib/index.js",
@@ -44,6 +45,7 @@ const project = new typescript.TypeScriptProject({
     "@aws-sdk/credential-provider-node",
     "@aws-sdk/protocol-http",
     "@aws-sdk/client-s3",
+    "@aws-sdk/client-ssm",
     "ws",
   ],
   devDeps: [
@@ -74,14 +76,21 @@ project.addTask("lint:fix", {
   exec: "biome check --write .",
 })
 
+// Override test task to use Bun's test runner
+project.testTask.reset("bun test")
+project.addTask("test:watch", {
+  description: "Run tests in watch mode",
+  exec: "bun test --watch",
+})
+
 // Add bin entry for CLI
 project.addBins({ "local-lambda": "lib/cli/index.js" })
 
 // Set package type to module for ESM support
 project.package.addField("type", "module")
 
-// Add CDK and direnv files to gitignore
-project.gitignore.addPatterns("cdk.out/", ".envrc")
+// Add CDK, direnv, and test output files to gitignore
+project.gitignore.addPatterns("cdk.out/", ".envrc", "test-reports/")
 
 // Add husky prepare script for git hooks
 project.package.setScript("prepare", "husky")

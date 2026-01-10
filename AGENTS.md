@@ -6,7 +6,7 @@ This file provides guidelines for AI coding agents working in this repository.
 
 Local Live Lambda is a CLI and CDK Aspect for deploying CDK stacks with Lambda functions running locally instead of in AWS. It uses AppSync Events for WebSocket communication between AWS and local development.
 
-**Tech Stack:** TypeScript, AWS CDK, Bun, Biome, Jest, Projen
+**Tech Stack:** TypeScript, AWS CDK, Bun, Biome, Projen
 
 ## Build Commands
 
@@ -26,10 +26,10 @@ bun run test
 bun run test:watch
 
 # Run a single test file
-bunx jest path/to/file.test.ts
+bun test path/to/file.test.ts
 
 # Run tests matching a pattern
-bunx jest -t "pattern"
+bun test --test-name-pattern "pattern"
 
 # Linting (Biome)
 bun run lint
@@ -49,26 +49,27 @@ bun run projen
 
 ## Testing
 
-- **Framework:** Jest with ts-jest
+- **Framework:** Bun's built-in test runner
 - **Test location:** `test/` directory and `src/**/*.test.ts`
 - **Test patterns:** `*.test.ts`, `*.spec.ts`
 
 ```bash
 # Run single test file
-bunx jest test/hello.test.ts
+bun test test/hello.test.ts
 
 # Run tests matching name pattern
-bunx jest -t "should transform lambda"
+bun test --test-name-pattern "should transform lambda"
 
 # Run with coverage
-bunx jest --coverage
+bun test --coverage
 
 # Watch specific file
-bunx jest --watch test/hello.test.ts
+bun test --watch test/hello.test.ts
 ```
 
 **Test file example:**
 ```typescript
+import { expect, test } from "bun:test"
 import { Hello } from "../src"
 
 test("hello", () => {

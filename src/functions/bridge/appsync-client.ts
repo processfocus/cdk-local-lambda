@@ -26,6 +26,12 @@ export interface PublishAndWaitOptions<T> {
   matchResponse: (message: T) => boolean
 }
 
+export interface SubscriptionOptions<T> {
+  channel: string
+  onMessage: (message: T) => void | Promise<void>
+  onError?: (error: Error) => void
+}
+
 /**
  * Client for AppSync Events API
  */
@@ -95,11 +101,14 @@ export class AppSyncEventsClient {
       events: [JSON.stringify(message)],
     })
 
+    // AppSync Events requires /event path for publishing
+    const path = url.pathname.endsWith("/event") ? url.pathname : "/event"
+
     const request = new HttpRequest({
       method: "POST",
       protocol: url.protocol,
       hostname: url.hostname,
-      path: url.pathname,
+      path,
       headers: {
         "Content-Type": "application/json",
         host: url.hostname,
@@ -117,8 +126,9 @@ export class AppSyncEventsClient {
 
     const signedRequest = await signer.sign(request)
 
-    // Make the HTTP request
-    const response = await fetch(url.href, {
+    // Make the HTTP request - use the correct endpoint with /event path
+    const publishUrl = `${url.protocol}//${url.hostname}${path}`
+    const response = await fetch(publishUrl, {
       method: "POST",
       headers: signedRequest.headers as Record<string, string>,
       body,
@@ -131,17 +141,38 @@ export class AppSyncEventsClient {
   }
 
   /**
+   * Subscribe to a channel and receive messages continuously.
+   * Returns an unsubscribe function.
+   */
+  async subscribe<T>(options: SubscriptionOptions<T>): Promise<() => void> {
+    const { channel, onMessage, onError } = options
+
+    await this.connectAndSubscribeContinuous<T>(channel, onMessage, onError)
+
+    return () => {
+      this.close()
+    }
+  }
+
+  /**
+   * Check if WebSocket is connected
+   */
+  isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN
+  }
+
+  /**
    * Connect to WebSocket and subscribe to a channel
    */
   private async connectAndSubscribe<T>(
     channel: string,
     onMessage: (message: T) => boolean,
   ): Promise<void> {
-    // Build signed WebSocket URL
-    const wsUrl = await this.buildSignedWebSocketUrl()
+    // Build signed WebSocket connection
+    const [wsUrl, subprotocols] = await this.buildSignedWebSocketConnection()
 
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(wsUrl, ["aws-appsync-event-ws", "header-"])
+      this.ws = new WebSocket(wsUrl, subprotocols)
 
       this.ws.on("open", () => {
         console.log("[Bridge] WebSocket connected")
@@ -154,14 +185,17 @@ export class AppSyncEventsClient {
 
         if (message.type === "connection_ack") {
           console.log("[Bridge] Connection acknowledged")
-          // Subscribe to channel
-          this.ws?.send(
-            JSON.stringify({
-              type: "subscribe",
-              id: "sub-1",
-              channel,
-            }),
-          )
+          // Subscribe to channel with authorization
+          this.createSubscribeAuthorization(channel).then((auth) => {
+            this.ws?.send(
+              JSON.stringify({
+                type: "subscribe",
+                id: "sub-1",
+                channel,
+                authorization: auth,
+              }),
+            )
+          })
         } else if (message.type === "subscribe_success") {
           console.log(`[Bridge] Subscribed to ${channel}`)
           resolve()
@@ -200,20 +234,99 @@ export class AppSyncEventsClient {
   }
 
   /**
-   * Build a signed WebSocket URL for AppSync Events
+   * Connect to WebSocket and subscribe to a channel with continuous message handling.
+   * Unlike connectAndSubscribe, this doesn't close after receiving a message.
    */
-  private async buildSignedWebSocketUrl(): Promise<string> {
-    const url = new URL(this.realtimeEndpoint)
+  private async connectAndSubscribeContinuous<T>(
+    channel: string,
+    onMessage: (message: T) => void | Promise<void>,
+    onError?: (error: Error) => void,
+  ): Promise<void> {
+    // Build signed WebSocket connection
+    const [wsUrl, subprotocols] = await this.buildSignedWebSocketConnection()
 
-    // Create a canonical request for WebSocket connection
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(wsUrl, subprotocols)
+
+      this.ws.on("open", () => {
+        console.log("[AppSync] WebSocket connected")
+        // Send connection init
+        this.ws?.send(JSON.stringify({ type: "connection_init" }))
+      })
+
+      this.ws.on("message", async (data) => {
+        const message = JSON.parse(data.toString())
+
+        if (message.type === "connection_ack") {
+          console.log("[AppSync] Connection acknowledged")
+          // Subscribe to channel with authorization
+          this.createSubscribeAuthorization(channel).then((auth) => {
+            this.ws?.send(
+              JSON.stringify({
+                type: "subscribe",
+                id: "sub-1",
+                channel,
+                authorization: auth,
+              }),
+            )
+          })
+        } else if (message.type === "subscribe_success") {
+          console.log(`[AppSync] Subscribed to ${channel}`)
+          resolve()
+        } else if (message.type === "data" && message.id === "sub-1") {
+          // Parse the event data
+          try {
+            const eventData = JSON.parse(message.event) as T
+            await onMessage(eventData)
+          } catch (err) {
+            console.error("[AppSync] Failed to parse event data:", err)
+            onError?.(err instanceof Error ? err : new Error(String(err)))
+          }
+        } else if (message.type === "error") {
+          console.error("[AppSync] WebSocket error:", message)
+          const error = new Error(
+            message.errors
+              ?.map((e: { message: string }) => e.message)
+              .join(", ") ?? "Unknown error",
+          )
+          onError?.(error)
+          reject(error)
+        }
+      })
+
+      this.ws.on("error", (err) => {
+        console.error("[AppSync] WebSocket error:", err)
+        onError?.(err)
+        reject(err)
+      })
+
+      this.ws.on("close", () => {
+        console.log("[AppSync] WebSocket closed")
+      })
+    })
+  }
+
+  /**
+   * Create authorization headers for subscribe operation
+   */
+  private async createSubscribeAuthorization(
+    channel: string,
+  ): Promise<Record<string, string>> {
+    const httpUrl = new URL(this.httpEndpoint)
+    const payload = JSON.stringify({ channel })
+
     const request = new HttpRequest({
-      method: "GET",
+      method: "POST",
       protocol: "https:",
-      hostname: url.hostname,
-      path: "/event/realtime",
+      hostname: httpUrl.hostname,
+      path: "/event",
       headers: {
-        host: url.hostname,
+        accept: "application/json, text/javascript",
+        "content-encoding": "amz-1.0",
+        "content-type": "application/json; charset=UTF-8",
+        host: httpUrl.hostname,
       },
+      body: payload,
     })
 
     const signer = new SignatureV4({
@@ -225,22 +338,86 @@ export class AppSyncEventsClient {
 
     const signedRequest = await signer.sign(request)
 
-    // Encode headers as base64 for WebSocket protocol
-    const headerPayload = {
-      host: url.hostname,
-      ...Object.fromEntries(
-        Object.entries(signedRequest.headers).filter(([key]) =>
-          key.toLowerCase().startsWith("x-amz-"),
-        ),
-      ),
+    const auth: Record<string, string> = {
+      accept: "application/json, text/javascript",
+      "content-encoding": "amz-1.0",
+      "content-type": "application/json; charset=UTF-8",
+      host: httpUrl.hostname,
+      "x-amz-date": signedRequest.headers["x-amz-date"],
+      "x-amz-content-sha256": signedRequest.headers["x-amz-content-sha256"],
+      Authorization: signedRequest.headers["authorization"],
     }
 
-    const encodedHeader = Buffer.from(JSON.stringify(headerPayload)).toString(
-      "base64",
-    )
+    if (signedRequest.headers["x-amz-security-token"]) {
+      auth["x-amz-security-token"] = signedRequest.headers["x-amz-security-token"]
+    }
 
-    // Build WebSocket URL
-    return `${this.realtimeEndpoint}?header=${encodeURIComponent(encodedHeader)}&payload=e30=`
+    return auth
+  }
+
+  /**
+   * Build signed WebSocket connection info for AppSync Events
+   * Returns [url, subprotocols] for WebSocket constructor
+   */
+  private async buildSignedWebSocketConnection(): Promise<
+    [string, string[]]
+  > {
+    const realtimeUrl = new URL(this.realtimeEndpoint)
+    realtimeUrl.pathname = "/event/realtime"
+    const httpUrl = new URL(this.httpEndpoint)
+
+    // For IAM auth, sign a POST request to the HTTP endpoint
+    const request = new HttpRequest({
+      method: "POST",
+      protocol: "https:",
+      hostname: httpUrl.hostname,
+      path: "/event",
+      headers: {
+        accept: "application/json, text/javascript",
+        "content-encoding": "amz-1.0",
+        "content-type": "application/json; charset=UTF-8",
+        host: httpUrl.hostname,
+      },
+      body: "{}",
+    })
+
+    const signer = new SignatureV4({
+      credentials: defaultProvider(),
+      region: this.region,
+      service: "appsync",
+      sha256: Sha256,
+    })
+
+    const signedRequest = await signer.sign(request)
+
+    // Build header payload for subprotocol - include all signed headers
+    const headerPayload: Record<string, string> = {
+      accept: "application/json, text/javascript",
+      "content-encoding": "amz-1.0",
+      "content-type": "application/json; charset=UTF-8",
+      host: httpUrl.hostname,
+      "x-amz-date": signedRequest.headers["x-amz-date"],
+      "x-amz-content-sha256": signedRequest.headers["x-amz-content-sha256"],
+      Authorization: signedRequest.headers["authorization"],
+    }
+
+    // Add session token if present
+    if (signedRequest.headers["x-amz-security-token"]) {
+      headerPayload["x-amz-security-token"] =
+        signedRequest.headers["x-amz-security-token"]
+    }
+
+    // Base64url encode (no padding, URL-safe)
+    const encodedHeader = Buffer.from(JSON.stringify(headerPayload))
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "")
+
+    // Auth is passed as header-{base64url} subprotocol
+    const authSubprotocol = `header-${encodedHeader}`
+
+    return [realtimeUrl.toString(), ["aws-appsync-event-ws", authSubprotocol]]
   }
 
   /**

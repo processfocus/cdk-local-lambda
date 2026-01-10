@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bunx effect-solutions:*)",
+      "Bash(aws ssm:*)",
+      "Bash(aws appsync:*)",
+      "Bash(grep:*)",
+      "Bash(tree:*)",
+      "Bash(bun:*)",
+      "Bash(bunx:*)",
       "WebFetch(domain:effect-ts.github.io)",
       "WebFetch(domain:effect.website)",
       "WebFetch(domain:www.effect.solutions)",

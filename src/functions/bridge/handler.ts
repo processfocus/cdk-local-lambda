@@ -8,7 +8,7 @@
  * 4. Waits for the daemon to process and respond
  * 5. Returns the response or throws an error
  *
- * The AppSync endpoints are baked in at deploy time by the bridge-builder custom resource.
+ * AppSync endpoints are read from SSM Parameter Store at runtime.
  */
 
 import type { Context } from "aws-lambda"
@@ -18,10 +18,7 @@ import {
   type ResponseMessage,
 } from "../../shared/types.js"
 import { AppSyncEventsClient } from "./appsync-client.js"
-
-// These placeholders are replaced by the bridge-builder at deploy time
-const HTTP_ENDPOINT = "__APPSYNC_HTTP_ENDPOINT__"
-const REALTIME_ENDPOINT = "__APPSYNC_REALTIME_ENDPOINT__"
+import { getAppSyncEndpoints } from "./ssm-config.js"
 
 // Timeout waiting for daemon response (ms)
 const RESPONSE_TIMEOUT_MS = 290_000 // 4:50 to leave buffer for 5 min Lambda timeout
@@ -39,10 +36,13 @@ export async function handler(
   console.log(`[Bridge] Processing invocation for ${functionName}`)
   console.log(`[Bridge] Request ID: ${requestId}`)
 
+  // Get AppSync endpoints from SSM
+  const { httpEndpoint, realtimeEndpoint } = await getAppSyncEndpoints()
+
   // Create AppSync client
   const client = new AppSyncEventsClient({
-    httpEndpoint: HTTP_ENDPOINT,
-    realtimeEndpoint: REALTIME_ENDPOINT,
+    httpEndpoint,
+    realtimeEndpoint,
   })
 
   // Build channel names

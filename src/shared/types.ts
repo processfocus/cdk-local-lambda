@@ -2,6 +2,8 @@
  * Shared constants and types used by bootstrap stack, aspect, and CLI.
  */
 
+import { createHash } from "node:crypto"
+
 /**
  * SSM parameter paths for Live Lambda infrastructure
  * Base path for all Live Lambda SSM parameters
@@ -61,6 +63,17 @@ export interface LambdaContext {
 }
 
 /**
+ * Hash a function name for use in channel paths.
+ * Uses first 16 hex chars of SHA256 to stay within AppSync limits.
+ */
+export function hashFunctionName(functionName: string): string {
+  return createHash("sha256")
+    .update(functionName)
+    .digest("hex")
+    .substring(0, 16)
+}
+
+/**
  * Channel name builders for AppSync Events
  */
 export const buildChannelName = {
@@ -68,11 +81,13 @@ export const buildChannelName = {
    * Channel for sending invocations to the daemon
    * Bridge -> Daemon
    */
-  invocation: (functionName: string) => `/live/${functionName}/in`,
+  invocation: (functionName: string) =>
+    `/live/${hashFunctionName(functionName)}/in`,
 
   /**
    * Channel for receiving responses from the daemon
    * Daemon -> Bridge
    */
-  response: (functionName: string) => `/live/${functionName}/out`,
+  response: (functionName: string) =>
+    `/live/${hashFunctionName(functionName)}/out`,
 } as const

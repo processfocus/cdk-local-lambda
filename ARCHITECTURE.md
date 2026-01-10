@@ -7,11 +7,14 @@ machine instead of remote.
 
 We deploy a CDK stack and replace all lambdas with a bridge
 adapter. The bridge adapter opens a websocket connection to AppSync
-Events, and sends the messages it receives.
+Events, and sends the requests it receives to AppSync Events.
 
 The local daemon also has a websocket open to AppSync Events. When it
-receives a message, it runs the corresponding lambda locally. It send
-the response back the response via websockets.
+receives a message, it runs the corresponding lambda locally. It sends
+the response back via websockets.
+
+The bridge lambda adapter has a web socket listener as well, and when
+it receives a response, returns it to the caller.
 
 Flow:
 
@@ -34,7 +37,8 @@ Flow:
 
 The hash in these channelsis the SHA256 hash of the function name,
 truncated to 16 hex characters. The reason to use a hash is that
-AppSync events has channel name length limits.
+AppSync events has a limit of 50 characters per segment of a channel
+name.
 
 Algorithm:
 
@@ -89,15 +93,147 @@ The name of the stack is `CdkLocalLambdaBootstrapStack`.
 
 # Message passing
 
-Details on how this works.
+## Message types
 
-1. How do we deal with large messages
-2. What is the message structure.
+- **invoke**: Bridge → Daemon. Carries the Lambda event and context.
+- **response**: Daemon → Bridge. Contains the success result or error.
+- **ping/pong**: Keepalive messages for WebSocket connection health.
+
+## Base message structure
+
+All messages share these fields:
+
+```ts
+interface BaseMessage {
+  type: "invoke" | "response" | "error" | "ping" | "pong"
+  id: string           // Request ID for correlation
+  functionId: string   // Lambda function identifier
+  timestamp: number    // Unix epoch ms
+}
+```
+
+## Request ID
+
+The message `id` field uses the Lambda's `context.awsRequestId`. This provides:
+
+- Unique ID per invocation (no generation needed)
+- Direct correlation with CloudWatch logs
+- Traceability across the bridge/daemon boundary
+
+Example: `a1b2c3d4-5678-90ab-cdef-1234567890ab`
+
+## InvokeMessage
+
+Sent from bridge lambda to daemon when a Lambda is invoked:
+
+```ts
+interface InvokeMessage extends BaseMessage {
+  type: "invoke"
+  event: unknown                     // Lambda event payload
+  context: SerializableLambdaContext
+  deadline: number                   // Timeout deadline (epoch ms)
+  env?: Record<string, string>       // Only present on cold start
+}
+
+interface SerializableLambdaContext {
+  awsRequestId: string
+  functionName: string
+  functionVersion: string
+  invokedFunctionArn: string
+  memoryLimitInMB: string
+  logGroupName: string
+  logStreamName: string
+}
+```
+
+## ResponseMessage
+
+Sent from daemon to bridge lambda after handler execution:
+
+```ts
+interface ResponseMessage extends BaseMessage {
+  type: "response"
+  body?: unknown      // Success response (mutually exclusive with error)
+  error?: {           // Error details (mutually exclusive with body)
+    name: string
+    message: string
+    stack?: string
+  }
+}
+```
+
+## Environment variables
+
+Environment variables are only sent on cold start (when `env` is present).
+The daemon caches env vars per function for subsequent invokes.
+
+The bridge filters out Lambda internals that shouldn't be forwarded:
+
+- Runtime internals: `_HANDLER`, `LAMBDA_TASK_ROOT`, `AWS_LAMBDA_RUNTIME_API`,
+  `AWS_LAMBDA_INITIALIZATION_TYPE`, `_LAMBDA_CONSOLE_SOCKET`,
+  `_LAMBDA_CONTROL_SOCKET`, `_LAMBDA_LOG_FD`
+- System vars: `PATH`, `PWD`, `HOME`, `USER`, `SHELL`, `TERM`,
+  `LD_LIBRARY_PATH`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`
+- X-Ray: `AWS_XRAY_DAEMON_ADDRESS`, `_AWS_XRAY_DAEMON_ADDRESS`
+
+## Large message chunking
+
+AppSync Events has a 64KB message limit. When an InvokeMessage or
+ResponseMessage exceeds this limit, it is wrapped in ChunkedMessage packets.
+
+The receiver distinguishes message types by checking for the `index` field:
+- If `index` is present → ChunkedMessage (reassemble first)
+- If `index` is absent → regular InvokeMessage or ResponseMessage
+
+```ts
+interface ChunkedMessage {
+  id: string      // Same request ID (awsRequestId) for all chunks
+  index: number   // Chunk index (0-based)
+  count: number   // Total number of chunks
+  data: string    // Base64 encoded chunk data
+  final: boolean  // True for last chunk
+}
+```
+
+Chunking algorithm:
+
+1. Serialize InvokeMessage or ResponseMessage to JSON, base64 encode.
+2. If size ≤ 64KB, send the message directly (not chunked).
+3. If size > 64KB, split into chunks of ~63KB (200 byte overhead for wrapper).
+4. Send each ChunkedMessage as separate AppSync message.
+5. Receiver reassembles chunks by id + index, validates with count + final.
+6. After reassembly, base64 decode and JSON parse to get original message.
+7. 30-second timeout for incomplete chunked messages.
+
+# Bridge and Daemon API
+
+## Bridge Lambda
+
+The bridge lambda needs to perform these operations:
+
+1. **Subscribe** to `/live/{hash}/out` (response channel)
+2. **Publish** InvokeMessage to `/live/{hash}/in`
+3. **Wait** for ResponseMessage on the subscription
+4. **Unsubscribe** and close connection
+
+The bridge must subscribe before publishing to avoid missing the response.
+
+## Daemon
+
+The daemon needs to perform these operations:
+
+1. **Subscribe** to `/live/{hash}/in` for each live function
+2. **Receive** InvokeMessages, reassemble chunks if needed
+3. **Execute** the local handler
+4. **Publish** ResponseMessage to `/live/{hash}/out`
+
+The daemon maintains a single long-lived WebSocket connection and
+subscribes to multiple channels (one per function).
 
 # Daemon
 
 The daemon opens up one single websocket subscription to AppSync. It
-uses SSM parameters to know which to access.
+uses SSM parameters to know which AppSync Events instance to access.
 
 The daemon subscribes to all lambdas which are live in the
 stack. Before deploying the stack, it is unknown what function name
@@ -112,22 +248,24 @@ CloudFormation will assign, so this is a three step process:
    It can then build a map of functionName -> localHandler for routing
    invocations to the correct local code
 3. The daemon subscribes to all `/live/{hash}/in` channels.
+4. The daemon updates it lists of tags when the cdk stack is
+   redeployed (it runs in watch mode).
 
-When the daemon receives a message on an in channel, it starts a
-lambda runtime emulator. This process exposes a lambda runtime
-interface to the lambda inside it.
+When the daemon receives a message on the "in" channel, it starts a
+new fiber exposing a new Effect HttpServer on an ephemoral port. This
+fibre emulates a lambda environment. The fibre then starts a new
+runtime process to run the code.
 
-For example for a Docker runtime, the Docker runtime would query this
-runtime emulator, and it knows now better than that it is running in a
-true lambda runtime, as all normal endpoints are available.
+For example for a Docker runtime, the Docker runtime would query the
+exposed runtime API for messages. It has no way of distinguishing its
+running locally or in an emulated environment. All normal endpoints it
+expects are available.
 
 Same for Typescript: the runtime emulator spins up a node process that
-loads the handler, then keeps querying the runtime for messages just
-like the AWS node runtime does, and then hands them off one by one to
-the typescript handler it has loaded, and returns the responses.
-
-The local lambda runtime emulator should use the Effect TS HttpServer and
-pick an ephemeral port.
+loads the handler, then keeps querying the runtime API for messages
+just like the AWS node runtime does, and then hands them off one by
+one to the typescript handler it has loaded, and returns the
+responses.
 
 # CDK watch mode
 
