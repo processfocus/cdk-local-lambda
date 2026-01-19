@@ -58,15 +58,3 @@ export async function getTestConfig(): Promise<TestConfig> {
 export function clearTestConfig(): void {
   testConfig = null
 }
-
-/**
- * Check if integration tests should be skipped.
- * Returns true if AWS credentials are not configured.
- */
-export function shouldSkipIntegrationTests(): boolean {
-  return !(
-    process.env.AWS_ACCESS_KEY_ID ||
-    process.env.AWS_PROFILE ||
-    process.env.AWS_ROLE_ARN
-  )
-}

@@ -1,24 +1,34 @@
 /**
- * Integration tests for AppSync Events client.
+ * Integration tests for the AppSyncEventsClient class.
  *
- * These tests require a deployed bootstrap stack with AppSync Events.
- * Run: bun test test/integration/appsync-client.test.ts
+ * Tests the client primitives in isolation:
+ * - publish() - sending messages via HTTP
+ * - subscribe() - receiving messages via WebSocket
+ * - publishAndWaitForResponse() - request-response pattern
+ * - Connection state management (isConnected, close)
+ *
+ * Requires a deployed bootstrap stack with AppSync Events.
  */
 
-import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  setDefaultTimeout,
+} from "bun:test"
 
 // Integration tests need longer timeout
 setDefaultTimeout(30_000)
+
 import { AppSyncEventsClient } from "../../src/functions/bridge/appsync-client"
-import { getTestConfig, shouldSkipIntegrationTests } from "./setup"
+import { getTestConfig } from "./setup"
 
 describe("AppSyncEventsClient", () => {
-  const shouldSkip = shouldSkipIntegrationTests()
-
   let client: AppSyncEventsClient
 
   beforeEach(async () => {
-    if (shouldSkip) return
     const config = await getTestConfig()
     client = new AppSyncEventsClient({
       httpEndpoint: config.httpEndpoint,
@@ -34,7 +44,7 @@ describe("AppSyncEventsClient", () => {
   })
 
   describe("publish", () => {
-    it.skipIf(shouldSkip)("can publish message to channel", async () => {
+    it("can publish message to channel", async () => {
       const testChannel = `/live/test/${Date.now()}`
       const testMessage = { type: "test", data: "hello" }
 
@@ -44,7 +54,7 @@ describe("AppSyncEventsClient", () => {
       ).resolves.toBeUndefined()
     })
 
-    it.skipIf(shouldSkip)("fails with invalid endpoint", async () => {
+    it("fails with invalid endpoint", async () => {
       const badClient = new AppSyncEventsClient({
         httpEndpoint:
           "https://invalid.appsync-api.us-east-1.amazonaws.com/event",
@@ -60,7 +70,7 @@ describe("AppSyncEventsClient", () => {
   })
 
   describe("subscribe", () => {
-    it.skipIf(shouldSkip)("can subscribe to channel", async () => {
+    it("can subscribe to channel", async () => {
       const testChannel = `/live/test/${Date.now()}`
       const messages: unknown[] = []
 
@@ -76,48 +86,45 @@ describe("AppSyncEventsClient", () => {
       expect(client.isConnected()).toBe(false)
     })
 
-    it.skipIf(shouldSkip)(
-      "receives published messages on subscription",
-      async () => {
-        const testChannel = `/live/test/${Date.now()}`
-        const receivedMessages: unknown[] = []
-        let messageReceived: () => void
+    it("receives published messages on subscription", async () => {
+      const testChannel = `/live/test/${Date.now()}`
+      const receivedMessages: unknown[] = []
+      let messageReceived: () => void
 
-        const messagePromise = new Promise<void>((resolve) => {
-          messageReceived = resolve
-        })
+      const messagePromise = new Promise<void>((resolve) => {
+        messageReceived = resolve
+      })
 
-        // Subscribe first
-        await client.subscribe({
-          channel: testChannel,
-          onMessage: (msg) => {
-            receivedMessages.push(msg)
-            messageReceived()
-          },
-        })
+      // Subscribe first
+      await client.subscribe({
+        channel: testChannel,
+        onMessage: (msg) => {
+          receivedMessages.push(msg)
+          messageReceived()
+        },
+      })
 
-        // Publish a message using a second client
-        const config = await getTestConfig()
-        const publishClient = new AppSyncEventsClient({
-          httpEndpoint: config.httpEndpoint,
-          realtimeEndpoint: config.realtimeEndpoint,
-          region: config.region,
-        })
+      // Publish a message using a second client
+      const config = await getTestConfig()
+      const publishClient = new AppSyncEventsClient({
+        httpEndpoint: config.httpEndpoint,
+        realtimeEndpoint: config.realtimeEndpoint,
+        region: config.region,
+      })
 
-        const testMessage = { type: "test", value: Date.now() }
-        await publishClient.publish(testChannel, testMessage)
+      const testMessage = { type: "test", value: Date.now() }
+      await publishClient.publish(testChannel, testMessage)
 
-        // Wait for message to be received
-        await messagePromise
+      // Wait for message to be received
+      await messagePromise
 
-        expect(receivedMessages).toHaveLength(1)
-        expect(receivedMessages[0]).toEqual(testMessage)
-      },
-    )
+      expect(receivedMessages).toHaveLength(1)
+      expect(receivedMessages[0]).toEqual(testMessage)
+    })
   })
 
   describe("publishAndWaitForResponse", () => {
-    it.skipIf(shouldSkip)("returns matching response", async () => {
+    it("returns matching response", async () => {
       const testId = Date.now().toString()
       const publishChannel = `/live/test/pub/${testId}`
       const subscribeChannel = `/live/test/sub/${testId}`
@@ -159,7 +166,7 @@ describe("AppSyncEventsClient", () => {
       await responderClient.close()
     })
 
-    it.skipIf(shouldSkip)("ignores non-matching messages", async () => {
+    it("ignores non-matching messages", async () => {
       const testId = Date.now().toString()
       const publishChannel = `/live/test/pub/${testId}`
       const subscribeChannel = `/live/test/sub/${testId}`
@@ -205,7 +212,7 @@ describe("AppSyncEventsClient", () => {
       await responderClient.close()
     })
 
-    it.skipIf(shouldSkip)("times out when no response", async () => {
+    it("times out when no response", async () => {
       const testId = Date.now().toString()
       const publishChannel = `/live/test/pub/${testId}`
       const subscribeChannel = `/live/test/sub/${testId}`
@@ -223,11 +230,11 @@ describe("AppSyncEventsClient", () => {
   })
 
   describe("isConnected", () => {
-    it.skipIf(shouldSkip)("returns false when not connected", () => {
+    it("returns false when not connected", () => {
       expect(client.isConnected()).toBe(false)
     })
 
-    it.skipIf(shouldSkip)("returns true after subscribing", async () => {
+    it("returns true after subscribing", async () => {
       const testChannel = `/live/test/${Date.now()}`
       await client.subscribe({
         channel: testChannel,
@@ -236,7 +243,7 @@ describe("AppSyncEventsClient", () => {
       expect(client.isConnected()).toBe(true)
     })
 
-    it.skipIf(shouldSkip)("returns false after close", async () => {
+    it("returns false after close", async () => {
       const testChannel = `/live/test/${Date.now()}`
       await client.subscribe({
         channel: testChannel,
@@ -248,7 +255,7 @@ describe("AppSyncEventsClient", () => {
   })
 
   describe("close", () => {
-    it.skipIf(shouldSkip)("terminates WebSocket cleanly", async () => {
+    it("terminates WebSocket cleanly", async () => {
       const testChannel = `/live/test/${Date.now()}`
       await client.subscribe({
         channel: testChannel,
@@ -260,7 +267,7 @@ describe("AppSyncEventsClient", () => {
       expect(client.isConnected()).toBe(false)
     })
 
-    it.skipIf(shouldSkip)("can be called multiple times safely", async () => {
+    it("can be called multiple times safely", async () => {
       const testChannel = `/live/test/${Date.now()}`
       await client.subscribe({
         channel: testChannel,

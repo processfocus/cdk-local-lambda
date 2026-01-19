@@ -1,14 +1,28 @@
 /**
- * End-to-end flow tests simulating complete bridge -> daemon -> bridge communication.
+ * End-to-end system tests for the complete invocation flow.
  *
- * These tests verify the full round-trip of Lambda invocations through AppSync Events.
+ * Tests the full round-trip: bridge -> AppSync -> daemon -> AppSync -> bridge
+ * - Complete invocation round-trip
+ * - Concurrent invocations (multiple parallel requests)
+ * - Multiple functions on separate channels
+ * - Error propagation through the system
+ * - Large payloads and edge cases (null/undefined results)
+ *
  * Requires a deployed bootstrap stack.
  */
 
-import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  setDefaultTimeout,
+} from "bun:test"
 
 // Integration tests need longer timeout
 setDefaultTimeout(60_000)
+
 import type { Context } from "aws-lambda"
 import { AppSyncEventsClient } from "../../src/functions/bridge/appsync-client"
 import { handler } from "../../src/functions/bridge/handler"
@@ -18,7 +32,7 @@ import {
   type InvocationMessage,
   type ResponseMessage,
 } from "../../src/shared/types"
-import { getTestConfig, shouldSkipIntegrationTests } from "./setup"
+import { getTestConfig } from "./setup"
 
 /**
  * Simulates a daemon that listens for invocations and responds.
@@ -63,20 +77,16 @@ function createMockContext(functionName: string, requestId: string): Context {
 }
 
 describe("E2E Flow", () => {
-  const shouldSkip = shouldSkipIntegrationTests()
-
   let daemonClient: AppSyncEventsClient
 
   beforeEach(async () => {
     clearEndpointCache()
-    if (!shouldSkip) {
-      const config = await getTestConfig()
-      daemonClient = new AppSyncEventsClient({
-        httpEndpoint: config.httpEndpoint,
-        realtimeEndpoint: config.realtimeEndpoint,
-        region: config.region,
-      })
-    }
+    const config = await getTestConfig()
+    daemonClient = new AppSyncEventsClient({
+      httpEndpoint: config.httpEndpoint,
+      realtimeEndpoint: config.realtimeEndpoint,
+      region: config.region,
+    })
   })
 
   afterEach(async () => {
@@ -85,7 +95,7 @@ describe("E2E Flow", () => {
     }
   })
 
-  it.skipIf(shouldSkip)("complete invocation round-trip", async () => {
+  it("complete invocation round-trip", async () => {
     const functionName = `e2e-roundtrip-${Date.now()}`
     const requestId = `req-${Date.now()}`
     const testEvent = { action: "greet", name: "World" }
@@ -112,7 +122,7 @@ describe("E2E Flow", () => {
     unsubscribe()
   })
 
-  it.skipIf(shouldSkip)("handles concurrent invocations", async () => {
+  it("handles concurrent invocations", async () => {
     const functionName = `e2e-concurrent-${Date.now()}`
 
     // Start simulated daemon
@@ -151,79 +161,76 @@ describe("E2E Flow", () => {
     unsubscribe()
   })
 
-  it.skipIf(shouldSkip)(
-    "different functions use different channels",
-    async () => {
-      const functionName1 = `e2e-func1-${Date.now()}`
-      const functionName2 = `e2e-func2-${Date.now()}`
-      const receivedInvocations: { functionName: string; requestId: string }[] =
-        []
+  it("different functions use different channels", async () => {
+    const functionName1 = `e2e-func1-${Date.now()}`
+    const functionName2 = `e2e-func2-${Date.now()}`
+    const receivedInvocations: { functionName: string; requestId: string }[] =
+      []
 
-      const config = await getTestConfig()
-      const daemon2Client = new AppSyncEventsClient({
-        httpEndpoint: config.httpEndpoint,
-        realtimeEndpoint: config.realtimeEndpoint,
-        region: config.region,
-      })
+    const config = await getTestConfig()
+    const daemon2Client = new AppSyncEventsClient({
+      httpEndpoint: config.httpEndpoint,
+      realtimeEndpoint: config.realtimeEndpoint,
+      region: config.region,
+    })
 
-      // Start daemon for function 1
-      const unsub1 = await simulateDaemon(
-        daemonClient,
-        functionName1,
-        (invocation) => {
-          receivedInvocations.push({
-            functionName: functionName1,
-            requestId: invocation.requestId,
-          })
-          return {
-            type: "response",
-            requestId: invocation.requestId,
-            result: { from: "daemon1" },
-          }
-        },
-      )
+    // Start daemon for function 1
+    const unsub1 = await simulateDaemon(
+      daemonClient,
+      functionName1,
+      (invocation) => {
+        receivedInvocations.push({
+          functionName: functionName1,
+          requestId: invocation.requestId,
+        })
+        return {
+          type: "response",
+          requestId: invocation.requestId,
+          result: { from: "daemon1" },
+        }
+      },
+    )
 
-      // Start daemon for function 2
-      const unsub2 = await simulateDaemon(
-        daemon2Client,
-        functionName2,
-        (invocation) => {
-          receivedInvocations.push({
-            functionName: functionName2,
-            requestId: invocation.requestId,
-          })
-          return {
-            type: "response",
-            requestId: invocation.requestId,
-            result: { from: "daemon2" },
-          }
-        },
-      )
+    // Start daemon for function 2
+    const unsub2 = await simulateDaemon(
+      daemon2Client,
+      functionName2,
+      (invocation) => {
+        receivedInvocations.push({
+          functionName: functionName2,
+          requestId: invocation.requestId,
+        })
+        return {
+          type: "response",
+          requestId: invocation.requestId,
+          result: { from: "daemon2" },
+        }
+      },
+    )
 
-      // Invoke both functions
-      const [result1, result2] = await Promise.all([
-        handler({}, createMockContext(functionName1, "req-1")),
-        handler({}, createMockContext(functionName2, "req-2")),
-      ])
+    // Invoke both functions
+    const [result1, result2] = await Promise.all([
+      handler({}, createMockContext(functionName1, "req-1")),
+      handler({}, createMockContext(functionName2, "req-2")),
+    ])
 
-      // Verify each daemon received correct invocation
-      expect(result1).toEqual({ from: "daemon1" })
-      expect(result2).toEqual({ from: "daemon2" })
-      expect(receivedInvocations).toHaveLength(2)
-      expect(
-        receivedInvocations.find((i) => i.functionName === functionName1),
-      ).toBeDefined()
-      expect(
-        receivedInvocations.find((i) => i.functionName === functionName2),
-      ).toBeDefined()
+    // Verify each daemon received correct invocation
+    expect(result1).toEqual({ from: "daemon1" })
+    expect(result2).toEqual({ from: "daemon2" })
+    expect(receivedInvocations).toHaveLength(2)
+    expect(
+      receivedInvocations.find((i) => i.functionName === functionName1),
+    ).toBeDefined()
+    expect(
+      receivedInvocations.find((i) => i.functionName === functionName2),
+    ).toBeDefined()
 
-      unsub1()
-      unsub2()
-      await daemon2Client.close()
-    },
-  )
+    unsub1()
+    unsub2()
+    await daemon2Client.close()
+  })
 
-  it.skipIf(shouldSkip)("error response propagates correctly", async () => {
+  it("error response propagates correctly", async () => {
     const functionName = `e2e-error-${Date.now()}`
     const requestId = `req-${Date.now()}`
 
@@ -260,7 +267,7 @@ describe("E2E Flow", () => {
     unsubscribe()
   })
 
-  it.skipIf(shouldSkip)("large payload handling", async () => {
+  it("large payload handling", async () => {
     const functionName = `e2e-large-${Date.now()}`
     const requestId = `req-${Date.now()}`
 
@@ -293,7 +300,7 @@ describe("E2E Flow", () => {
     unsubscribe()
   })
 
-  it.skipIf(shouldSkip)("handles empty response result", async () => {
+  it("handles empty response result", async () => {
     const functionName = `e2e-empty-${Date.now()}`
     const requestId = `req-${Date.now()}`
 
@@ -316,7 +323,7 @@ describe("E2E Flow", () => {
     unsubscribe()
   })
 
-  it.skipIf(shouldSkip)("handles null response result", async () => {
+  it("handles null response result", async () => {
     const functionName = `e2e-null-${Date.now()}`
     const requestId = `req-${Date.now()}`
 
