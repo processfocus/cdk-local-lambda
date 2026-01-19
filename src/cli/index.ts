@@ -5,47 +5,20 @@
  *
  * Commands:
  * - bootstrap: Deploy the CdkLocalLambdaBootstrapStack
- * - daemon: Start the local daemon (stub)
+ * - local: Run Lambda functions locally using Docker
  */
 
-import { Command, Options } from "@effect/cli"
+import { Command } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Console, Effect } from "effect"
+import { Effect } from "effect"
 import { bootstrapCommand } from "./commands/bootstrap.js"
-
-// Common options
-const profileOption = Options.text("profile").pipe(
-  Options.optional,
-  Options.withDescription("AWS profile to use"),
-)
-
-const regionOption = Options.text("region").pipe(
-  Options.optional,
-  Options.withDescription("AWS region to deploy to"),
-)
-
-/**
- * Daemon command stub
- */
-const daemonCommand = Command.make(
-  "daemon",
-  { profile: profileOption, region: regionOption },
-  () =>
-    Effect.gen(function* () {
-      yield* Console.error("Daemon not yet implemented")
-      yield* Effect.fail(new Error("Daemon not yet implemented"))
-    }),
-).pipe(
-  Command.withDescription(
-    "Start the local Lambda daemon (not yet implemented)",
-  ),
-)
+import { localCommand } from "./commands/local.js"
 
 /**
  * Root command
  */
 const rootCommand = Command.make("local-lambda", {}).pipe(
-  Command.withSubcommands([bootstrapCommand, daemonCommand]),
+  Command.withSubcommands([bootstrapCommand, localCommand]),
   Command.withDescription("CLI for developing AWS Lambda functions locally"),
 )
 

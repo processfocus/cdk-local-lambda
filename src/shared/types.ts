@@ -16,6 +16,12 @@ export const SSM_BASE_PATH = "/cdk-local-lambda"
 export const LIVE_LAMBDA_TAG = "live-lambda:handler"
 
 /**
+ * Tag key used to store the local Docker context path on DockerImageFunction.
+ * The daemon uses this to build and run the container locally.
+ */
+export const LIVE_LAMBDA_DOCKER_TAG = "live-lambda:docker-context"
+
+/**
  * Name of the CDK bootstrap stack
  */
 export const BOOTSTRAP_STACK_NAME = "CdkLocalLambdaBootstrapStack"

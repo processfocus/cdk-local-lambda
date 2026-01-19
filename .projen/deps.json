@@ -59,6 +59,10 @@
       "type": "runtime"
     },
     {
+      "name": "@aws-sdk/client-lambda",
+      "type": "runtime"
+    },
+    {
       "name": "@aws-sdk/client-s3",
       "type": "runtime"
     },
@@ -95,7 +99,7 @@
       "type": "runtime"
     },
     {
-      "name": "constructs",
+      "name": "chokidar",
       "type": "runtime"
     },
     {

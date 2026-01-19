@@ -38,7 +38,7 @@ const project = new typescript.TypeScriptProject({
     "@effect/platform",
     "@effect/platform-bun",
     "aws-cdk-lib",
-    "constructs",
+    // constructs is added automatically as a peer dep of aws-cdk-lib
     // AWS SDK for bridge functions
     "@aws-sdk/signature-v4",
     "@aws-crypto/sha256-js",
@@ -46,7 +46,9 @@ const project = new typescript.TypeScriptProject({
     "@aws-sdk/protocol-http",
     "@aws-sdk/client-s3",
     "@aws-sdk/client-ssm",
+    "@aws-sdk/client-lambda",
     "ws",
+    "chokidar",
   ],
   devDeps: [
     "@effect/language-service",

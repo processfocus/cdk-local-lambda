@@ -1,5 +1,29 @@
-* refactor: move bootstrap to separate commands/ directory
-* handler.ts: don't replace endpoints at deploy time: use SSM parameters to pick them up
+* DONE refactor: move bootstrap to separate commands/ directory
+CLOSED: [2026-01-09 Fri 14:15]
+* DONE aIt seems we lost the cdk bootstrap identifier from our SSM parameters.
+CLOSED: [2026-01-10 Sat 19:13]
+* DONE handler.ts: don't replace endpoints at deploy time: use SSM parameters to pick them up
+CLOSED: [2026-01-10 Sat 19:13]
+* IN-PROGRESS Build daemon again with "local" command: just for docker
+* IN-PROGRESS Daemon needs to run cdk watch
+* TODO I have src/functions/bridge/appsync-client and src/cli/appsync/client.ts
+  Are they doing similar things?
+* TODO Now support typescript.
+* TODO Do not always deploy bootstrap: simply check version
+* TODO Our bootstrap command should simply use the "compiled" yaml bootstrap, not run cdk
+* TODO Add test env var only comes in via first invoke
+* TODO Switch repo to processfocus: free publicity
 * Send patch to CDK to make entry & hander visible.
-* Do not always deploy bootstrap: simply check version
-* Our bootstrap command should simply use the "compiled" yaml bootstrap, not run cdk
+* Container needs to restart on code changes
+* Restart container on crash
+* TODO Does not restart when port 9001 is in use
+* TODO rename hello.test.ts
+* TODO Drop shouldSkipIntegrationTests from test/setup.ts
+* TODO I don't understand the tests
+* TODO The logging is insane
+
+
+Missed entire architecture
+- didn't implement the runtime environment
+- we didn't get cdk deploy and live mode with daemon
+- docker image was not a replacement

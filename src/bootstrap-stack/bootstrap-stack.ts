@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import * as cdk from "aws-cdk-lib"
 import * as appsync from "aws-cdk-lib/aws-appsync"
+import * as ecrAssets from "aws-cdk-lib/aws-ecr-assets"
 import * as iam from "aws-cdk-lib/aws-iam"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as logs from "aws-cdk-lib/aws-logs"
@@ -180,7 +181,8 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
     })
 
     // Build bridge handler and upload to S3
-    const bridgeS3Location = this.buildAndUploadBridge()
+    const { bucketName, s3Key, bridgeSource } = this.buildAndUploadBridge()
+    const bridgeS3Location = { bucketName, s3Key }
 
     // Store bridge S3 location in SSM
     new ssm.StringParameter(this, "BridgeBucketParam", {
@@ -193,6 +195,21 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
       parameterName: `${ssmBasePath}/bridge-key`,
       stringValue: bridgeS3Location.s3Key,
       description: "S3 key for Live Lambda bridge code",
+    })
+
+    // Build and store Docker bridge images for DockerImageFunction support
+    const dockerBridgeImages = this.buildDockerBridgeImages(bridgeSource)
+
+    new ssm.StringParameter(this, "BridgeImageArm64Param", {
+      parameterName: `${ssmBasePath}/bridge-image-arm64`,
+      stringValue: dockerBridgeImages.arm64ImageUri,
+      description: "ECR image URI for ARM64 bridge Docker image",
+    })
+
+    new ssm.StringParameter(this, "BridgeImageX86Param", {
+      parameterName: `${ssmBasePath}/bridge-image-x86_64`,
+      stringValue: dockerBridgeImages.x86ImageUri,
+      description: "ECR image URI for x86_64 bridge Docker image",
     })
 
     // Output the endpoints (for CLI and debugging)
@@ -241,7 +258,11 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
    * Build the bridge handler and upload to S3 using a custom resource.
    * The bridge code has AppSync endpoints baked in at deploy time.
    */
-  private buildAndUploadBridge(): { bucketName: string; s3Key: string } {
+  private buildAndUploadBridge(): {
+    bucketName: string
+    s3Key: string
+    bridgeSource: string
+  } {
     // Build the bridge source code at synth time (with placeholders)
     const bridgePath = path.join(__dirname, "..", "functions", "bridge")
     const outputPath = path.join(__dirname, "..", "out-tsc", "bridge-bundle.js")
@@ -278,7 +299,7 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
             "-c",
             [
               "npm install --prefix /tmp esbuild",
-              "/tmp/node_modules/.bin/esbuild handler.ts --bundle --platform=node --target=node22 --format=cjs --outfile=/asset-output/index.js --external:@aws-sdk/*",
+              "/tmp/node_modules/.bin/esbuild handler.ts --bundle --platform=node --target=node24 --format=cjs --outfile=/asset-output/index.js --external:@aws-sdk/*",
             ].join(" && "),
           ],
           local: {
@@ -329,6 +350,96 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
     return {
       bucketName: bridgeResource.getAttString("BucketName"),
       s3Key: bridgeResource.getAttString("S3Key"),
+      bridgeSource,
+    }
+  }
+
+  /**
+   * Build Docker bridge images for ARM64 and x86_64 architectures.
+   * Uses CDK Docker image assets to build and push to ECR.
+   */
+  private buildDockerBridgeImages(_bridgeSource: string): {
+    arm64ImageUri: string
+    x86ImageUri: string
+  } {
+    const projectRoot = path.join(__dirname, "..", "..")
+    const bridgeDockerPath = path.join(
+      projectRoot,
+      "src",
+      "functions",
+      "bridge-docker",
+    )
+
+    // Create a temporary directory for Docker build context
+    const buildContextPath = path.join(
+      projectRoot,
+      "src",
+      "out-tsc",
+      "docker-ctx",
+    )
+    fs.mkdirSync(buildContextPath, { recursive: true })
+
+    // Build the runtime wrapper that implements the Lambda Runtime API
+    // This bundle INCLUDES all dependencies (AWS SDK, ws, etc.) since
+    // Docker images using provided:al2023 don't have them pre-installed
+    const runtimePath = path.join(bridgeDockerPath, "runtime.ts")
+    const runtimeBundlePath = path.join(buildContextPath, "runtime.js")
+    try {
+      execSync(
+        `bun build ${runtimePath} --outfile=${runtimeBundlePath} --target=node --format=cjs --bundle`,
+        { stdio: "pipe" },
+      )
+    } catch (err) {
+      console.error("Failed to bundle runtime wrapper for Docker:", err)
+      throw err
+    }
+
+    // Copy Dockerfile and bootstrap script
+    fs.copyFileSync(
+      path.join(bridgeDockerPath, "Dockerfile.arm64"),
+      path.join(buildContextPath, "Dockerfile.arm64"),
+    )
+    fs.copyFileSync(
+      path.join(bridgeDockerPath, "Dockerfile.x86_64"),
+      path.join(buildContextPath, "Dockerfile.x86_64"),
+    )
+    fs.copyFileSync(
+      path.join(bridgeDockerPath, "bootstrap.sh"),
+      path.join(buildContextPath, "bootstrap.sh"),
+    )
+
+    // Build ARM64 image using CDK Docker image asset
+    const arm64Image = new ecrAssets.DockerImageAsset(
+      this,
+      "BridgeImageArm64",
+      {
+        directory: buildContextPath,
+        file: "Dockerfile.arm64",
+        platform: ecrAssets.Platform.LINUX_ARM64,
+      },
+    )
+
+    // Build x86_64 image using CDK Docker image asset
+    const x86Image = new ecrAssets.DockerImageAsset(this, "BridgeImageX86", {
+      directory: buildContextPath,
+      file: "Dockerfile.x86_64",
+      platform: ecrAssets.Platform.LINUX_AMD64,
+    })
+
+    // Output the image URIs
+    new cdk.CfnOutput(this, "BridgeImageArm64Uri", {
+      value: arm64Image.imageUri,
+      description: "ECR URI for ARM64 bridge Docker image",
+    })
+
+    new cdk.CfnOutput(this, "BridgeImageX86Uri", {
+      value: x86Image.imageUri,
+      description: "ECR URI for x86_64 bridge Docker image",
+    })
+
+    return {
+      arm64ImageUri: arm64Image.imageUri,
+      x86ImageUri: x86Image.imageUri,
     }
   }
 }

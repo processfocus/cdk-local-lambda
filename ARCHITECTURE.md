@@ -71,9 +71,13 @@ This deploys the given stack in "live" mode.
    CloudFormation deploy. In particular it cannot be
    replaced. Changing platform type for example canot be done.
 3. So we swap out the real lambda by a bridge lambda, and we have three versions:
-   a. ZIP version
-   b. arm64 docker.
-   c. X64 docker
+   a. ZIP version - for NodejsFunction and other zip-based lambdas
+   b. arm64 Docker bridge - for DockerImageFunction on ARM64
+   c. x86_64 Docker bridge - for DockerImageFunction on x86_64
+   
+   The bridge runs IN AWS and relays messages to the local daemon.
+   The user's actual code runs LOCALLY (either as a Node.js process
+   or as a Docker container built from the local context).
 4. No environment variables can be replaced.
 5. Should not rely on control plane API for operation.
 6. We simply swap out the function implementation. The bridge simply replaces the existing implementation without further changes.
@@ -240,8 +244,9 @@ stack. Before deploying the stack, it is unknown what function name
 CloudFormation will assign, so this is a three step process:
 
 1. Deploy the stack, tag every function with the location of its local
-   handler: `cdk-local-lambda:handler = <local-handler-path>`.
-   This tag is present whenever the aspect is added to the stack,
+   handler: `live-lambda:handler = <local-handler-path>`.
+   For Docker functions: `live-lambda:docker-context = <local-docker-context-path>`.
+   These tags are present whenever the aspect is added to the stack,
    regardless if it is running live or not.
 2. At startup, the daemon queries the functions with the local lambda
    tag: Calls ListFunctions + ListTags APIs to find tagged functions.
@@ -256,16 +261,36 @@ new fiber exposing a new Effect HttpServer on an ephemoral port. This
 fibre emulates a lambda environment. The fibre then starts a new
 runtime process to run the code.
 
-For example for a Docker runtime, the Docker runtime would query the
-exposed runtime API for messages. It has no way of distinguishing its
-running locally or in an emulated environment. All normal endpoints it
-expects are available.
+## Docker Functions
 
-Same for Typescript: the runtime emulator spins up a node process that
-loads the handler, then keeps querying the runtime API for messages
-just like the AWS node runtime does, and then hands them off one by
-one to the typescript handler it has loaded, and returns the
-responses.
+For Docker functions, the daemon:
+
+1. Reads the `live-lambda:docker-context` tag which contains the local
+   path to the Docker context directory (e.g., `functions/echo`).
+2. Builds the Docker image from that local context using `docker build`.
+3. Runs the container with `AWS_LAMBDA_RUNTIME_API` pointing to our
+   local Runtime API server.
+4. The container polls our Runtime API just like it would poll the real
+   Lambda Runtime API - it cannot distinguish between running locally
+   or in AWS.
+5. When invocations arrive via AppSync, the daemon queues them for the
+   container to pick up via the Runtime API.
+
+This approach means we run the **user's actual Docker image** locally,
+not the bridge image. The bridge image only runs in AWS to relay
+messages to/from the local daemon.
+
+## TypeScript/Node.js Functions
+
+For TypeScript functions, the daemon:
+
+1. Reads the `live-lambda:handler` tag which contains the local handler
+   path (e.g., `functions/my-func/handler.handler`).
+2. Spins up a Node.js process that loads the handler module.
+3. The process queries our Runtime API for invocations, just like the
+   AWS Node.js runtime does.
+4. Invocations are handed off to the loaded handler function.
+5. Responses are returned via the Runtime API.
 
 # CDK watch mode
 

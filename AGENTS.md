@@ -2,6 +2,11 @@
 
 This file provides guidelines for AI coding agents working in this repository.
 
+## Architecture
+
+If you need to understand the broader picture when making code
+changes, read @ARCHITECTURE.md.
+
 ## Project Overview
 
 Local Live Lambda is a CLI and CDK Aspect for deploying CDK stacks with Lambda functions running locally instead of in AWS. It uses AppSync Events for WebSocket communication between AWS and local development.
@@ -232,3 +237,4 @@ examples/                       # Example projects
 3. **Biome, not ESLint** - Linting uses Biome, not ESLint
 4. **ESM imports** - Use `.js` extension for relative imports
 5. **Node prefix** - Use `node:` prefix for Node.js built-ins
+6. **Node.js 24** - Use Node.js 24 by default everywhere (Docker images, Lambda runtimes, etc.)

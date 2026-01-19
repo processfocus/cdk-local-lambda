@@ -12,10 +12,18 @@
 
 import * as cdk from "aws-cdk-lib"
 import * as iam from "aws-cdk-lib/aws-iam"
-import * as lambda from "aws-cdk-lib/aws-lambda"
+import type * as lambda from "aws-cdk-lib/aws-lambda"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import type { IConstruct } from "constructs"
-import { LIVE_LAMBDA_TAG, SSM_BASE_PATH } from "../shared/types.js"
+import {
+  LIVE_LAMBDA_DOCKER_TAG,
+  LIVE_LAMBDA_TAG,
+  SSM_BASE_PATH,
+} from "../shared/types.js"
+import {
+  getDockerContextPath,
+  isDockerImageFunction,
+} from "./docker-function-hook.js"
 import { getEntryPath, getHandlerName } from "./nodejs-function-hook.js"
 
 // Regex to strip file extension from entry path
@@ -72,10 +80,14 @@ export class LiveLambdaAspect implements cdk.IAspect {
   }
 
   visit(node: IConstruct): void {
-    // Only process Lambda functions
-    if (!(node instanceof lambda.Function)) {
+    // Check if this is a Lambda Function using duck-typing instead of instanceof
+    // This avoids issues with multiple copies of aws-cdk-lib being loaded
+    if (!this.isLambdaFunction(node)) {
       return
     }
+
+    // Cast to lambda.Function for type checking (we've verified it's a Lambda)
+    const fn = node as unknown as lambda.Function
 
     // Skip if already processed (aspects can visit multiple times)
     const nodeId = node.node.addr
@@ -84,7 +96,7 @@ export class LiveLambdaAspect implements cdk.IAspect {
     }
 
     // Generate a unique function ID from the construct path
-    const functionId = this.generateFunctionId(node)
+    const functionId = this.generateFunctionId(fn)
 
     // Check exclusion list
     if (this.props.excludeFunctions?.includes(functionId)) {
@@ -103,20 +115,74 @@ export class LiveLambdaAspect implements cdk.IAspect {
 
     console.log(`[LiveLambda] Transforming function: ${functionId}`)
 
-    // Get handler paths before we modify anything
-    const { originalHandler, localHandler } = this.getHandlerPaths(node)
-    const stackName = this.props.stackName || cdk.Stack.of(node).stackName
+    const stackName = this.props.stackName || cdk.Stack.of(fn).stackName
 
-    // Transform the function
-    this.transformFunction(
-      node,
-      stackName,
-      functionId,
-      originalHandler,
-      localHandler,
-    )
+    // Check if this is a DockerImageFunction
+    const isDockerFunction = isDockerImageFunction(fn)
+
+    if (isDockerFunction) {
+      console.log(`[LiveLambda] Detected DockerImageFunction: ${functionId}`)
+      this.transformDockerFunction(fn, stackName, functionId)
+    } else {
+      // Get handler paths before we modify anything
+      const { originalHandler, localHandler } = this.getHandlerPaths(fn)
+
+      // Transform the function
+      this.transformFunction(
+        fn,
+        stackName,
+        functionId,
+        originalHandler,
+        localHandler,
+      )
+    }
 
     this.processedFunctions.add(nodeId)
+  }
+
+  /**
+   * Check if a construct is a Lambda Function using duck-typing.
+   * This avoids instanceof issues when multiple copies of aws-cdk-lib are loaded.
+   */
+  private isLambdaFunction(node: IConstruct): boolean {
+    // Check by constructor name - handles Function, DockerImageFunction, NodejsFunction, etc.
+    // Also handles our patched versions like DockerImageFunctionWithCapture
+    const constructorName = node.constructor.name
+    // CDK appends "2" to class names in some versions
+    const isFunction =
+      constructorName === "Function" ||
+      constructorName === "Function2" ||
+      constructorName.endsWith("Function") ||
+      constructorName.endsWith("Function2") ||
+      constructorName.includes("Function") // Catch patched versions like DockerImageFunctionWithCapture
+
+    if (!isFunction) {
+      return false
+    }
+
+    // Exclude CfnFunction (the L1 construct)
+    if (constructorName === "CfnFunction") {
+      return false
+    }
+
+    // Verify it has expected Lambda Function properties
+    const maybeFunction = node as unknown as {
+      functionName?: unknown
+      functionArn?: unknown
+      node?: { defaultChild?: unknown }
+    }
+
+    // Must have functionName and functionArn (IFunction interface)
+    if (!maybeFunction.functionName || !maybeFunction.functionArn) {
+      return false
+    }
+
+    // Must have a defaultChild (the CfnFunction)
+    if (!maybeFunction.node?.defaultChild) {
+      return false
+    }
+
+    return true
   }
 
   private generateFunctionId(fn: lambda.Function): string {
@@ -171,6 +237,103 @@ export class LiveLambdaAspect implements cdk.IAspect {
     )
   }
 
+  /**
+   * Transform a DockerImageFunction to use the bridge Docker image.
+   * Stores the local Docker context path in a tag for the daemon to build/run locally.
+   */
+  private transformDockerFunction(
+    fn: lambda.Function,
+    _stackName: string,
+    functionId: string,
+  ): void {
+    const cfnFunction = fn.node.defaultChild as lambda.CfnFunction
+    const stack = cdk.Stack.of(fn)
+
+    // Get the docker context path from the hook
+    const dockerContextPath = getDockerContextPath(fn)
+    if (!dockerContextPath) {
+      console.warn(
+        `[LiveLambda] Warning: Could not get docker context for ${functionId}. ` +
+          `The function will be transformed but daemon may not be able to run it locally.`,
+      )
+    }
+
+    // Get SSM parameters
+    const bootstrapQualifier =
+      stack.node.tryGetContext("@aws-cdk/core:bootstrapQualifier") ||
+      "hnb659fds"
+    const ssmBasePath = `${SSM_BASE_PATH}/${bootstrapQualifier}`
+
+    const apiArn = ssm.StringParameter.valueForStringParameter(
+      stack,
+      `${ssmBasePath}/api-arn`,
+    )
+
+    // Determine architecture and get appropriate bridge image
+    const architecture = this.getArchitecture(cfnFunction)
+    const bridgeImageParam =
+      architecture === "arm64" ? "bridge-image-arm64" : "bridge-image-x86_64"
+
+    const bridgeImageUri = ssm.StringParameter.valueForStringParameter(
+      stack,
+      `${ssmBasePath}/${bridgeImageParam}`,
+    )
+
+    // Add tag with docker context path for daemon discovery
+    // The daemon uses this tag to build and run the container locally
+    if (dockerContextPath) {
+      cfnFunction.tags.setTag(LIVE_LAMBDA_DOCKER_TAG, dockerContextPath)
+    }
+
+    // Grant permissions to publish/subscribe to AppSync Events
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "appsync:EventConnect",
+          "appsync:EventPublish",
+          "appsync:EventSubscribe",
+        ],
+        resources: [apiArn, `${apiArn}/*`],
+      }),
+    )
+
+    // Grant permissions to read SSM parameters (bridge needs AppSync endpoints)
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["ssm:GetParameter", "ssm:GetParameters"],
+        resources: [
+          `arn:aws:ssm:${stack.region}:${stack.account}:parameter${ssmBasePath}/*`,
+        ],
+      }),
+    )
+
+    // Increase timeout to allow for local debugging
+    cfnFunction.timeout = 300 // 5 minutes
+
+    // Replace the Docker image with the bridge image
+    cfnFunction.code = {
+      imageUri: bridgeImageUri,
+    }
+
+    console.log(
+      `[LiveLambda] Replaced Docker image with bridge (${architecture})`,
+    )
+  }
+
+  /**
+   * Determine the architecture of a Lambda function.
+   * Defaults to x86_64 if not explicitly set.
+   */
+  private getArchitecture(cfnFunction: lambda.CfnFunction): "arm64" | "x86_64" {
+    const architectures = cfnFunction.architectures as string[] | undefined
+    if (architectures?.includes("arm64")) {
+      return "arm64"
+    }
+    return "x86_64"
+  }
+
   private transformFunction(
     fn: lambda.Function,
     _stackName: string,
@@ -215,6 +378,17 @@ export class LiveLambdaAspect implements cdk.IAspect {
           "appsync:EventSubscribe",
         ],
         resources: [apiArn, `${apiArn}/*`],
+      }),
+    )
+
+    // Grant permissions to read SSM parameters (bridge needs AppSync endpoints)
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["ssm:GetParameter", "ssm:GetParameters"],
+        resources: [
+          `arn:aws:ssm:${stack.region}:${stack.account}:parameter${ssmBasePath}/*`,
+        ],
       }),
     )
 
