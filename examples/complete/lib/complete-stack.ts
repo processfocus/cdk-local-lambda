@@ -23,6 +23,11 @@ export class CompleteStack extends cdk.Stack {
    */
   public readonly echoFunction: lambda.DockerImageFunction
 
+  /**
+   * The adder Lambda function
+   */
+  public readonly adderFunction: lambda.DockerImageFunction
+
   constructor(scope: Construct, id: string, props?: CompleteStackProps) {
     super(scope, id, props)
 
@@ -37,6 +42,17 @@ export class CompleteStack extends cdk.Stack {
       description: "Echo Lambda function - returns the input event",
     })
 
+    // Create an adder DockerImageFunction (x64 architecture)
+    this.adderFunction = new lambda.DockerImageFunction(this, "AdderFunction", {
+      code: lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, "..", "functions", "adder"),
+      ),
+      architecture: lambda.Architecture.X86_64,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      description: "Adder Lambda function - adds two numbers",
+    })
+
     // Output the function name and ARN
     new cdk.CfnOutput(this, "EchoFunctionName", {
       value: this.echoFunction.functionName,
@@ -46,6 +62,16 @@ export class CompleteStack extends cdk.Stack {
     new cdk.CfnOutput(this, "EchoFunctionArn", {
       value: this.echoFunction.functionArn,
       description: "ARN of the echo function",
+    })
+
+    new cdk.CfnOutput(this, "AdderFunctionName", {
+      value: this.adderFunction.functionName,
+      description: "Name of the adder function",
+    })
+
+    new cdk.CfnOutput(this, "AdderFunctionArn", {
+      value: this.adderFunction.functionArn,
+      description: "ARN of the adder function",
     })
   }
 }
