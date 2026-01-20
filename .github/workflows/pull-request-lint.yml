@@ -28,5 +28,6 @@ jobs:
             fix
             chore
             refactor
+            test
             vendor
           requireScope: false

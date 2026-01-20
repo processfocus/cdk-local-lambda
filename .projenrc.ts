@@ -102,7 +102,7 @@ project.github
   ?.tryFindWorkflow("pull-request-lint")
   ?.file?.addOverride(
     "jobs.validate.steps.0.with.types",
-    "feat\nfix\nchore\nrefactor\nvendor",
+    "feat\nfix\nchore\nrefactor\ntest\nvendor",
   )
 
 project.synth()
