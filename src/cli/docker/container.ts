@@ -305,6 +305,8 @@ export const makeLambdaContainerConfig = (options: {
     AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(options.memoryMB),
     AWS_REGION: options.awsRegion ?? "us-east-1",
     AWS_DEFAULT_REGION: options.awsRegion ?? "us-east-1",
+    AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${options.functionName}`,
+    AWS_LAMBDA_LOG_STREAM_NAME: "local",
     _HANDLER: options.handler ?? "index.handler",
     ...options.additionalEnv,
   },

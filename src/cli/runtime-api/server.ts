@@ -1,24 +1,28 @@
 /**
- * Lambda Runtime API HTTP server using Bun's native HTTP server.
+ * Lambda Runtime API HTTP server using Effect HttpServer.
  *
  * This server emulates the AWS Lambda Runtime API that Docker containers
  * use to receive invocations and send responses.
  *
- * The server maintains a queue of pending invocations. When a container
- * polls /invocation/next, it blocks until an invocation is available.
+ * Each Lambda function gets its own server on an ephemeral port. The server
+ * maintains a queue of pending invocations. When a container polls
+ * /invocation/next, it blocks until an invocation is available.
  *
  * @see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html
  */
 
-import { Effect, Queue, type Scope } from "effect"
+import * as Headers from "@effect/platform/Headers"
+import * as HttpRouter from "@effect/platform/HttpRouter"
+import * as HttpServerRequest from "@effect/platform/HttpServerRequest"
+import * as HttpServerResponse from "@effect/platform/HttpServerResponse"
+import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import { Effect, Option, Queue, type Scope } from "effect"
 import type {
   LambdaError,
   LambdaInitError,
   LambdaInvocation,
   LambdaResponse,
 } from "./types.js"
-
-type BunServer = ReturnType<typeof Bun.serve>
 
 /**
  * State for a Runtime API server session.
@@ -29,14 +33,22 @@ export interface RuntimeApiState {
   invocationQueue: Queue.Queue<LambdaInvocation>
   /** Queue for responses/errors from the container */
   responseQueue: Queue.Queue<LambdaResponse | LambdaError | LambdaInitError>
-  /** The port the server is listening on */
-  port: number
 }
 
 /**
- * Create a new Runtime API state.
+ * Result from starting a Runtime API server.
  */
-export const makeRuntimeApiState = (port: number) =>
+export interface RuntimeApiServer {
+  /** The actual port the server is listening on */
+  port: number
+  /** The state containing the invocation and response queues */
+  state: RuntimeApiState
+}
+
+/**
+ * Create a new Runtime API state (queues only, no port).
+ */
+export const makeRuntimeApiState = () =>
   Effect.gen(function* () {
     const invocationQueue = yield* Queue.unbounded<LambdaInvocation>()
     const responseQueue = yield* Queue.unbounded<
@@ -46,227 +58,194 @@ export const makeRuntimeApiState = (port: number) =>
     return {
       invocationQueue,
       responseQueue,
-      port,
     } satisfies RuntimeApiState
   })
-
-/**
- * Parse route from request path.
- */
-const parseRoute = (
-  path: string,
-): {
-  type:
-    | "invocation-next"
-    | "invocation-response"
-    | "invocation-error"
-    | "init-error"
-    | "unknown"
-  requestId?: string
-} => {
-  const invocationNext = /^\/2018-06-01\/runtime\/invocation\/next\/?$/.exec(
-    path,
-  )
-  if (invocationNext) {
-    return { type: "invocation-next" }
-  }
-
-  const invocationResponse =
-    /^\/2018-06-01\/runtime\/invocation\/([^/]+)\/response\/?$/.exec(path)
-  if (invocationResponse) {
-    return { type: "invocation-response", requestId: invocationResponse[1] }
-  }
-
-  const invocationError =
-    /^\/2018-06-01\/runtime\/invocation\/([^/]+)\/error\/?$/.exec(path)
-  if (invocationError) {
-    return { type: "invocation-error", requestId: invocationError[1] }
-  }
-
-  const initError = /^\/2018-06-01\/runtime\/init\/error\/?$/.exec(path)
-  if (initError) {
-    return { type: "init-error" }
-  }
-
-  return { type: "unknown" }
-}
 
 /**
  * Handle GET /2018-06-01/runtime/invocation/next
  * Blocks until an invocation is available in the queue.
  */
-const handleInvocationNext = async (
-  state: RuntimeApiState,
-): Promise<Response> => {
-  console.log("[RuntimeAPI] Container polling for next invocation...")
+const handleInvocationNext = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    console.log("[RuntimeAPI] Container polling for next invocation...")
 
-  // Block until an invocation is available
-  const invocation = await Effect.runPromise(Queue.take(state.invocationQueue))
+    // Block until an invocation is available
+    const invocation = yield* Queue.take(state.invocationQueue)
 
-  console.log(
-    `[RuntimeAPI] Returning invocation ${invocation.requestId} to container`,
-  )
+    console.log(
+      `[RuntimeAPI] Returning invocation ${invocation.requestId} to container`,
+    )
 
-  return new Response(JSON.stringify(invocation.event), {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "Lambda-Runtime-Aws-Request-Id": invocation.requestId,
-      "Lambda-Runtime-Deadline-Ms": String(invocation.deadlineMs),
-      "Lambda-Runtime-Invoked-Function-Arn": invocation.invokedFunctionArn,
-      "Lambda-Runtime-Log-Group-Name": invocation.logGroupName,
-      "Lambda-Runtime-Log-Stream-Name": invocation.logStreamName,
-    },
+    return yield* HttpServerResponse.json(invocation.event, {
+      status: 200,
+      headers: Headers.fromInput({
+        "Lambda-Runtime-Aws-Request-Id": invocation.requestId,
+        "Lambda-Runtime-Deadline-Ms": String(invocation.deadlineMs),
+        "Lambda-Runtime-Invoked-Function-Arn": invocation.invokedFunctionArn,
+        "Lambda-Runtime-Log-Group-Name": invocation.logGroupName,
+        "Lambda-Runtime-Log-Stream-Name": invocation.logStreamName,
+      }),
+    })
   })
-}
 
 /**
- * Handle POST /2018-06-01/runtime/invocation/{requestId}/response
+ * Handle POST /2018-06-01/runtime/invocation/:requestId/response
  */
-const handleInvocationResponse = async (
-  state: RuntimeApiState,
-  requestId: string,
-  request: Request,
-): Promise<Response> => {
-  let body: unknown = null
-  try {
-    body = await request.json()
-  } catch {
-    // Body might not be JSON
-  }
+const handleInvocationResponse = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    const params = yield* HttpRouter.params
+    const requestId = params.requestId ?? ""
+    const request = yield* HttpServerRequest.HttpServerRequest
 
-  const response: LambdaResponse = {
-    requestId,
-    body,
-  }
+    // Body might not be JSON, so gracefully handle parse errors
+    const body = yield* Effect.orElseSucceed(request.json, () => null)
 
-  console.log(`[RuntimeAPI] Received response for ${requestId}`)
-  Effect.runSync(Queue.offer(state.responseQueue, response))
+    const response: LambdaResponse = {
+      requestId,
+      body,
+    }
 
-  return new Response(null, { status: 202 })
-}
+    console.log(`[RuntimeAPI] Received response for ${requestId}`)
+    yield* Queue.offer(state.responseQueue, response)
+
+    return HttpServerResponse.empty({ status: 202 })
+  })
 
 /**
- * Handle POST /2018-06-01/runtime/invocation/{requestId}/error
+ * Handle POST /2018-06-01/runtime/invocation/:requestId/error
  */
-const handleInvocationError = async (
-  state: RuntimeApiState,
-  requestId: string,
-  request: Request,
-): Promise<Response> => {
-  let errorBody: { errorMessage?: string; stackTrace?: string[] } = {}
-  try {
-    errorBody = (await request.json()) as typeof errorBody
-  } catch {
-    // Body might not be JSON
-  }
+const handleInvocationError = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    const params = yield* HttpRouter.params
+    const requestId = params.requestId ?? ""
+    const request = yield* HttpServerRequest.HttpServerRequest
 
-  const errorType =
-    request.headers.get("lambda-runtime-function-error-type") ?? "Error"
+    // Body might not be JSON, so gracefully handle parse errors
+    const errorBody = yield* Effect.orElseSucceed(
+      request.json as Effect.Effect<
+        { errorMessage?: string; stackTrace?: string[] },
+        unknown
+      >,
+      (): { errorMessage?: string; stackTrace?: string[] } => ({}),
+    )
 
-  const error: LambdaError = {
-    requestId,
-    errorType: String(errorType),
-    errorMessage: errorBody.errorMessage ?? "Unknown error",
-    stackTrace: errorBody.stackTrace,
-  }
+    const errorTypeHeader = Headers.get(
+      request.headers,
+      "lambda-runtime-function-error-type",
+    )
+    const errorType = Option.getOrElse(errorTypeHeader, () => "Error")
 
-  console.log(
-    `[RuntimeAPI] Received error for ${requestId}: ${error.errorMessage}`,
-  )
-  Effect.runSync(Queue.offer(state.responseQueue, error))
+    const error: LambdaError = {
+      requestId,
+      errorType: String(errorType),
+      errorMessage: errorBody.errorMessage ?? "Unknown error",
+      stackTrace: errorBody.stackTrace,
+    }
 
-  return new Response(null, { status: 202 })
-}
+    console.log(
+      `[RuntimeAPI] Received error for ${requestId}: ${error.errorMessage}`,
+    )
+    yield* Queue.offer(state.responseQueue, error)
+
+    return HttpServerResponse.empty({ status: 202 })
+  })
 
 /**
  * Handle POST /2018-06-01/runtime/init/error
  */
-const handleInitError = async (
-  state: RuntimeApiState,
-  request: Request,
-): Promise<Response> => {
-  let errorBody: { errorMessage?: string; stackTrace?: string[] } = {}
-  try {
-    errorBody = (await request.json()) as typeof errorBody
-  } catch {
-    // Body might not be JSON
-  }
+const handleInitError = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
 
-  const errorType =
-    request.headers.get("lambda-runtime-function-error-type") ?? "InitError"
+    // Body might not be JSON, so gracefully handle parse errors
+    const errorBody = yield* Effect.orElseSucceed(
+      request.json as Effect.Effect<
+        { errorMessage?: string; stackTrace?: string[] },
+        unknown
+      >,
+      (): { errorMessage?: string; stackTrace?: string[] } => ({}),
+    )
 
-  const error: LambdaInitError = {
-    errorType: String(errorType),
-    errorMessage: errorBody.errorMessage ?? "Unknown init error",
-    stackTrace: errorBody.stackTrace,
-  }
+    const errorTypeHeader = Headers.get(
+      request.headers,
+      "lambda-runtime-function-error-type",
+    )
+    const errorType = Option.getOrElse(errorTypeHeader, () => "InitError")
 
-  console.log(`[RuntimeAPI] Received init error: ${error.errorMessage}`)
-  Effect.runSync(Queue.offer(state.responseQueue, error))
+    const error: LambdaInitError = {
+      errorType: String(errorType),
+      errorMessage: errorBody.errorMessage ?? "Unknown init error",
+      stackTrace: errorBody.stackTrace,
+    }
 
-  return new Response(null, { status: 202 })
-}
+    console.log(`[RuntimeAPI] Received init error: ${error.errorMessage}`)
+    yield* Queue.offer(state.responseQueue, error)
 
-/**
- * Create and start the Runtime API server.
- * Returns the server instance which can be stopped later.
- */
-export const createRuntimeApiServer = (state: RuntimeApiState): BunServer => {
-  const server = Bun.serve({
-    port: state.port,
-    hostname: "0.0.0.0",
-    // Long idle timeout for long-polling /invocation/next requests
-    idleTimeout: 255, // Maximum allowed by Bun (4.25 minutes)
-    fetch: async (request) => {
-      const url = new URL(request.url)
-      const route = parseRoute(url.pathname)
-
-      // Don't log polling requests to reduce noise
-      if (route.type !== "invocation-next") {
-        console.log(
-          `[RuntimeAPI] ${request.method} ${url.pathname} -> ${route.type}`,
-        )
-      }
-
-      switch (route.type) {
-        case "invocation-next":
-          return handleInvocationNext(state)
-        case "invocation-response":
-          return handleInvocationResponse(state, route.requestId!, request)
-        case "invocation-error":
-          return handleInvocationError(state, route.requestId!, request)
-        case "init-error":
-          return handleInitError(state, request)
-        default:
-          console.log(`[RuntimeAPI] Unknown route: ${url.pathname}`)
-          return new Response("Not Found", { status: 404 })
-      }
-    },
+    return HttpServerResponse.empty({ status: 202 })
   })
 
-  console.log(
-    `[RuntimeAPI] Server listening on ${server.hostname}:${server.port}`,
+/**
+ * Create the Runtime API router for a given state.
+ */
+const makeRuntimeApiRouter = (state: RuntimeApiState) =>
+  HttpRouter.empty.pipe(
+    HttpRouter.get(
+      "/2018-06-01/runtime/invocation/next",
+      handleInvocationNext(state),
+    ),
+    HttpRouter.post(
+      "/2018-06-01/runtime/invocation/:requestId/response",
+      handleInvocationResponse(state),
+    ),
+    HttpRouter.post(
+      "/2018-06-01/runtime/invocation/:requestId/error",
+      handleInvocationError(state),
+    ),
+    HttpRouter.post("/2018-06-01/runtime/init/error", handleInitError(state)),
   )
-
-  return server
-}
 
 /**
- * Create a Runtime API server that listens on the specified port.
- * Returns a scoped effect that keeps the server running until the scope closes.
+ * Start a Runtime API server on an ephemeral port.
+ * Returns the actual port and state for this server instance.
+ *
+ * The server is scoped - it will be stopped when the scope closes.
  */
-export const startRuntimeApiServer = (
-  state: RuntimeApiState,
-): Effect.Effect<BunServer, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => createRuntimeApiServer(state)),
-    (server) =>
-      Effect.sync(() => {
-        console.log(`[RuntimeAPI] Stopping server on port ${state.port}`)
-        server.stop()
-      }),
-  )
+export const startRuntimeApiServer = (): Effect.Effect<
+  RuntimeApiServer,
+  never,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    // Create state (queues) for this server
+    const state = yield* makeRuntimeApiState()
+
+    // Create router for this state
+    const router = makeRuntimeApiRouter(state)
+
+    // Create HTTP server on ephemeral port (port: 0)
+    const server = yield* BunHttpServer.make({
+      port: 0,
+      hostname: "0.0.0.0",
+      idleTimeout: 255, // Max allowed by Bun (4.25 minutes) for long-polling
+    })
+
+    // Start serving the router
+    yield* server.serve(router)
+
+    // Get the actual assigned port
+    const address = server.address
+    if (address._tag !== "TcpAddress") {
+      // This should never happen since we're using TCP
+      throw new Error("Expected TCP address")
+    }
+
+    console.log(`[RuntimeAPI] Server listening on port ${address.port}`)
+
+    return {
+      port: address.port,
+      state,
+    } satisfies RuntimeApiServer
+  })
 
 /**
  * Queue an invocation for the container to process.

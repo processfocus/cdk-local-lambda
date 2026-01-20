@@ -275,9 +275,10 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
     const outputPath = path.join(__dirname, "..", "out-tsc", "bridge-bundle.js")
 
     // Bundle the bridge handler
+    // Note: We use .js since TypeScript compiles src/ to lib/
     try {
       execSync(
-        `bun build ${bridgePath}/handler.ts --outfile=${outputPath} --target=node --format=cjs --bundle --external=@aws-sdk/*`,
+        `bun build ${bridgePath}/handler.js --outfile=${outputPath} --target=node --format=cjs --bundle --external=@aws-sdk/*`,
         { stdio: "pipe" },
       )
     } catch (err) {
@@ -313,7 +314,7 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
             tryBundle(outputDir: string): boolean {
               try {
                 execSync(
-                  `bun build ${bridgeBuilderPath}/handler.ts --outfile=${outputDir}/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*`,
+                  `bun build ${bridgeBuilderPath}/handler.js --outfile=${outputDir}/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*`,
                   { stdio: "pipe" },
                 )
                 return true

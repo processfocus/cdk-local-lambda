@@ -21,7 +21,16 @@ import {
 } from "@aws-sdk/client-lambda"
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, type Fiber, Ref, Schedule, Stream } from "effect"
+import {
+  Console,
+  Effect,
+  Exit,
+  type Fiber,
+  Ref,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect"
 import {
   BOOTSTRAP_STACK_NAME,
   BOOTSTRAP_VERSION,
@@ -40,10 +49,9 @@ import {
   runDockerContainer,
 } from "../docker/container.js"
 import {
-  createRuntimeApiServer,
-  makeRuntimeApiState,
   queueInvocation,
   type RuntimeApiState,
+  startRuntimeApiServer,
   waitForResponse,
 } from "../runtime-api/server.js"
 import type {
@@ -66,15 +74,14 @@ interface DiscoveredFunction {
   architecture?: "arm64" | "x86_64"
 }
 
-type BunServer = ReturnType<typeof Bun.serve>
-
 /**
  * State for a running function container.
  */
 interface FunctionContainer {
   fn: DiscoveredFunction
   runtimeState: RuntimeApiState
-  runtimeServer: BunServer
+  /** The port the Runtime API server is listening on */
+  port: number
   containerFiber: Fiber.RuntimeFiber<void, Error>
   containerName: string
   /** Map of requestId -> response resolver */
@@ -289,7 +296,7 @@ const discoverFunctions = () =>
  */
 const startFunctionContainer = (
   fn: DiscoveredFunction,
-  runtimeState: RuntimeApiState,
+  port: number,
   projectRoot: string,
 ): Effect.Effect<Fiber.RuntimeFiber<void, Error>, Error> =>
   Effect.gen(function* () {
@@ -325,7 +332,7 @@ const startFunctionContainer = (
     const containerConfig = makeLambdaContainerConfig({
       imageUri: imageName,
       runtimeApiHost,
-      runtimeApiPort: runtimeState.port,
+      runtimeApiPort: port,
       functionName: fn.functionName,
       functionVersion: "$LATEST",
       memoryMB: fn.memoryMB,
@@ -334,7 +341,7 @@ const startFunctionContainer = (
     })
 
     console.log(
-      `[Local] Starting container for ${fn.functionName} on port ${runtimeState.port}`,
+      `[Local] Starting container for ${fn.functionName} on port ${port}`,
     )
 
     // Use Effect.runFork to run the container completely independently
@@ -523,11 +530,6 @@ const qualifierOption = Options.text("qualifier").pipe(
   Options.withDescription("CDK bootstrap qualifier"),
 )
 
-const portOption = Options.integer("port").pipe(
-  Options.withDefault(9001),
-  Options.withDescription("Base port for Runtime API servers"),
-)
-
 const stacksOption = Options.text("stacks").pipe(
   Options.optional,
   Options.withDescription(
@@ -544,10 +546,9 @@ export const localCommand = Command.make(
     profile: profileOption,
     region: regionOption,
     qualifier: qualifierOption,
-    port: portOption,
     stacks: stacksOption,
   },
-  ({ profile, region, qualifier, port, stacks }) =>
+  ({ profile, region, qualifier, stacks }) =>
     Effect.gen(function* () {
       yield* Console.log("[Local] Starting local Lambda development...")
 
@@ -581,7 +582,10 @@ export const localCommand = Command.make(
       const projectRoot = process.cwd()
 
       let appSyncClient: ReturnType<typeof makeAppSyncClient> | null = null
-      let nextPort = port
+
+      // Create a long-lived scope for all Runtime API servers
+      // Servers will run until this scope is closed (when the program ends)
+      const serverScope = yield* Scope.make()
 
       // Function to start/update the daemon with discovered functions
       const startOrUpdateDaemon = Effect.gen(function* () {
@@ -628,11 +632,12 @@ export const localCommand = Command.make(
             `[Local] Found: ${fn.functionName} -> Docker context: ${fn.dockerContextPath}`,
           )
 
-          // Create Runtime API state and start server
-          const runtimeState = yield* makeRuntimeApiState(nextPort)
-          // Use createRuntimeApiServer directly since we want long-running servers
-          const runtimeServer = createRuntimeApiServer(runtimeState)
-          nextPort++
+          // Create Runtime API server on ephemeral port
+          // The server is scoped to serverScope which lives for the program duration
+          const { port, state: runtimeState } =
+            yield* startRuntimeApiServer().pipe(
+              Effect.provideService(Scope.Scope, serverScope),
+            )
 
           // Generate container name (must match what makeLambdaContainerConfig uses)
           const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
@@ -640,7 +645,7 @@ export const localCommand = Command.make(
           // Build and start the container from local Docker context
           const containerFiber = yield* startFunctionContainer(
             fn,
-            runtimeState,
+            port,
             projectRoot,
           ).pipe(
             Effect.catchAll((error) => {
@@ -654,7 +659,7 @@ export const localCommand = Command.make(
           const container: FunctionContainer = {
             fn,
             runtimeState,
-            runtimeServer,
+            port,
             containerFiber,
             containerName,
             pendingResponses: new Map(),
@@ -734,12 +739,12 @@ export const localCommand = Command.make(
           cdkWatchProc.kill("SIGTERM")
         }
 
-        // Stop all Runtime API servers and Docker containers
+        // Stop all Docker containers
+        // Note: Runtime API servers are managed by Effect scope and will be
+        // cleaned up when the scope closes (process exit)
         const currentContainers = await Effect.runPromise(Ref.get(containers))
         for (const [name, container] of currentContainers) {
           console.log(`[Local] Stopping container: ${name}`)
-          // Stop the Runtime API server
-          container.runtimeServer.stop()
           // Stop the Docker container (find by name prefix)
           try {
             execSync(
@@ -750,6 +755,9 @@ export const localCommand = Command.make(
             // Ignore errors - container may already be stopped
           }
         }
+
+        // Close the server scope to clean up Runtime API servers
+        await Effect.runPromise(Scope.close(serverScope, Exit.void))
 
         process.exit(0)
       }
