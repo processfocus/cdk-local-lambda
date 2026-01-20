@@ -12,6 +12,8 @@
  */
 
 import { type ChildProcess, execSync, spawn } from "node:child_process"
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 import {
   LambdaClient,
   ListFunctionsCommand,
@@ -21,6 +23,8 @@ import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, type Fiber, Ref, Schedule, Stream } from "effect"
 import {
+  BOOTSTRAP_STACK_NAME,
+  BOOTSTRAP_VERSION,
   buildChannelName,
   type InvocationMessage,
   LIVE_LAMBDA_DOCKER_TAG,
@@ -81,6 +85,115 @@ interface FunctionContainer {
     }
   >
 }
+
+/**
+ * Check if bootstrap stack version matches the expected version.
+ * Returns true if version matches, false if missing or mismatched.
+ */
+const checkBootstrapVersion = (qualifier: string) =>
+  Effect.gen(function* () {
+    const ssmClient = new SSMClient({})
+    const basePath = `${SSM_BASE_PATH}/${qualifier}`
+
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        const response = await ssmClient.send(
+          new GetParameterCommand({ Name: `${basePath}/version` }),
+        )
+        return response.Parameter?.Value
+      },
+      catch: () => null,
+    }).pipe(Effect.catchAll(() => Effect.succeed(null)))
+
+    if (result === null) {
+      yield* Console.log("[Local] Bootstrap stack version parameter not found.")
+      return false
+    }
+
+    if (result !== BOOTSTRAP_VERSION) {
+      yield* Console.log(
+        `[Local] Bootstrap stack version mismatch: found ${result}, expected ${BOOTSTRAP_VERSION}`,
+      )
+      return false
+    }
+
+    return true
+  })
+
+/**
+ * Run the bootstrap stack deployment.
+ */
+const runBootstrap = (options: { profile?: string; region?: string }) =>
+  Effect.gen(function* () {
+    yield* Console.log("[Local] Running bootstrap stack deployment...")
+
+    // Resolve the CDK app path relative to this module
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const cdkAppPath = path.resolve(__dirname, "..", "cdk-app.js")
+
+    const args = [
+      "npx",
+      "cdk",
+      "deploy",
+      BOOTSTRAP_STACK_NAME,
+      "--require-approval",
+      "never",
+      "--app",
+      `"bun ${cdkAppPath}"`,
+    ]
+
+    if (options.profile) {
+      args.push("--profile", options.profile)
+    }
+
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    if (options.region) {
+      env.AWS_REGION = options.region
+      env.CDK_DEFAULT_REGION = options.region
+    }
+
+    const command = args.join(" ")
+    yield* Console.log(`[Local] Running: ${command}`)
+
+    yield* Effect.try({
+      try: () => {
+        execSync(command, { stdio: "inherit", env, shell: "/bin/bash" })
+      },
+      catch: (error) => {
+        if (error instanceof Error) {
+          return new Error(`Bootstrap deployment failed: ${error.message}`)
+        }
+        return new Error("Bootstrap deployment failed with unknown error")
+      },
+    })
+
+    yield* Console.log("[Local] Bootstrap stack deployed successfully!")
+  })
+
+/**
+ * Ensure bootstrap stack is deployed with correct version.
+ * Automatically deploys if missing or outdated.
+ */
+const ensureBootstrap = (options: {
+  qualifier: string
+  profile?: string
+  region?: string
+}) =>
+  Effect.gen(function* () {
+    yield* Console.log("[Local] Checking bootstrap stack version...")
+
+    const versionOk = yield* checkBootstrapVersion(options.qualifier)
+
+    if (!versionOk) {
+      yield* Console.log(
+        "[Local] Bootstrap stack needs to be deployed or updated.",
+      )
+      yield* runBootstrap({ profile: options.profile, region: options.region })
+    } else {
+      yield* Console.log("[Local] Bootstrap stack version OK.")
+    }
+  })
 
 /**
  * Read AppSync endpoints from SSM.
@@ -451,6 +564,13 @@ export const localCommand = Command.make(
       if (regionValue) {
         process.env.AWS_REGION = regionValue
       }
+
+      // Ensure bootstrap stack is deployed with correct version
+      yield* ensureBootstrap({
+        qualifier,
+        profile: profileValue,
+        region: regionValue,
+      })
 
       // Track running containers by function name
       const containers = yield* Ref.make<Map<string, FunctionContainer>>(

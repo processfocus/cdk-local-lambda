@@ -230,6 +230,23 @@ examples/                       # Example projects
 | `tsconfig.dev.json` | Dev/test TypeScript config |
 | `biome.json` | Linting & formatting rules |
 
+## Example Stack
+
+The `examples/complete/` directory contains a working example CDK stack for testing changes.
+
+```bash
+# Install dependencies
+cd examples/complete && bun install
+
+# Run the local command against the example stack
+bun ../../lib/cli/index.js local
+
+# Or with options
+bun ../../lib/cli/index.js local --profile myprofile --region us-west-2
+```
+
+The example stack includes a DockerImageFunction that can be used to test end-to-end local Lambda execution.
+
 ## Important Notes
 
 1. **Projen manages config** - Edit `.projenrc.ts` then run `bun run projen`

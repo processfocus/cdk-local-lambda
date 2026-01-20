@@ -12,7 +12,7 @@ import * as s3 from "aws-cdk-lib/aws-s3"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import * as cr from "aws-cdk-lib/custom-resources"
 import type { Construct } from "constructs"
-import { SSM_BASE_PATH } from "../shared/types.js"
+import { BOOTSTRAP_VERSION, SSM_BASE_PATH } from "../shared/types.js"
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -210,6 +210,13 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
       parameterName: `${ssmBasePath}/bridge-image-x86_64`,
       stringValue: dockerBridgeImages.x86ImageUri,
       description: "ECR image URI for x86_64 bridge Docker image",
+    })
+
+    // Store the bootstrap version for compatibility checking
+    new ssm.StringParameter(this, "VersionParam", {
+      parameterName: `${ssmBasePath}/version`,
+      stringValue: BOOTSTRAP_VERSION,
+      description: "Bootstrap stack version for Live Lambda",
     })
 
     // Output the endpoints (for CLI and debugging)

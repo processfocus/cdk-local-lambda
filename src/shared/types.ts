@@ -27,6 +27,12 @@ export const LIVE_LAMBDA_DOCKER_TAG = "live-lambda:docker-context"
 export const BOOTSTRAP_STACK_NAME = "CdkLocalLambdaBootstrapStack"
 
 /**
+ * Current version of the bootstrap stack.
+ * Increment this when making breaking changes to the bootstrap infrastructure.
+ */
+export const BOOTSTRAP_VERSION = "1"
+
+/**
  * Environment variable names used by the bridge handler
  */
 export const ENV_VARS = {
