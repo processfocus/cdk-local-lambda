@@ -229,9 +229,15 @@ const getAppSyncEndpoints = (qualifier: string) =>
   })
 
 /**
- * Discover Lambda functions with live-lambda tags.
+ * CloudFormation stack name tag (set automatically by CDK)
  */
-const discoverFunctions = () =>
+const CFN_STACK_NAME_TAG = "aws:cloudformation:stack-name"
+
+/**
+ * Discover Lambda functions with live-lambda tags.
+ * @param stackFilter - Optional list of stack names to filter by
+ */
+const discoverFunctions = (stackFilter?: string[]) =>
   Effect.gen(function* () {
     const lambdaClient = new LambdaClient({})
     const functions: DiscoveredFunction[] = []
@@ -264,6 +270,14 @@ const discoverFunctions = () =>
 
         // Check for live-lambda tag (handler) or docker-context tag
         if (tags[LIVE_LAMBDA_TAG] || tags[LIVE_LAMBDA_DOCKER_TAG]) {
+          // Filter by stack name if specified
+          if (stackFilter && stackFilter.length > 0) {
+            const stackName = tags[CFN_STACK_NAME_TAG]
+            if (!stackName || !stackFilter.includes(stackName)) {
+              continue
+            }
+          }
+
           // Determine architecture from Lambda config
           const architectures = fn.Architectures ?? ["x86_64"]
           const architecture = architectures.includes("arm64")
@@ -441,6 +455,53 @@ const handleInvocation = (
   })
 
 /**
+ * List all CDK stack names in the current project.
+ * Uses `cdk list` to get stack names from the CDK app.
+ */
+const listCdkStacks = (options: {
+  profile?: string
+  region?: string
+}): Effect.Effect<string[], Error> =>
+  Effect.gen(function* () {
+    const args = ["cdk", "list"]
+
+    if (options.profile) {
+      args.push("--profile", options.profile)
+    }
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+    }
+
+    if (options.region) {
+      env.AWS_REGION = options.region
+      env.CDK_DEFAULT_REGION = options.region
+    }
+
+    yield* Console.log("[Local] Discovering CDK stacks in project...")
+
+    const output = yield* Effect.try({
+      try: () =>
+        execSync(`npx ${args.join(" ")}`, {
+          encoding: "utf-8",
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      catch: (error) =>
+        new Error(`Failed to list CDK stacks: ${String(error)}`),
+    })
+
+    const stacks = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+
+    yield* Console.log(`[Local] Found stacks: ${stacks.join(", ")}`)
+
+    return stacks
+  })
+
+/**
  * Start CDK watch process with CDK_LIVE=true.
  */
 const startCdkWatch = (options: {
@@ -554,7 +615,7 @@ export const localCommand = Command.make(
 
       const profileValue = profile._tag === "Some" ? profile.value : undefined
       const regionValue = region._tag === "Some" ? region.value : undefined
-      const stackList =
+      const stacksFromOption =
         stacks._tag === "Some"
           ? stacks.value.split(",").map((s) => s.trim())
           : undefined
@@ -565,6 +626,16 @@ export const localCommand = Command.make(
       if (regionValue) {
         process.env.AWS_REGION = regionValue
       }
+
+      // Get the list of stacks from the CDK project
+      // If --stacks is provided, use that; otherwise discover all stacks in the project
+      const projectStacks = yield* listCdkStacks({
+        profile: profileValue,
+        region: regionValue,
+      })
+
+      // Use provided stacks or all project stacks for filtering
+      const stackFilter = stacksFromOption ?? projectStacks
 
       // Ensure bootstrap stack is deployed with correct version
       yield* ensureBootstrap({
@@ -599,9 +670,9 @@ export const localCommand = Command.make(
           appSyncClient = makeAppSyncClient(endpoints)
         }
 
-        // Discover functions
+        // Discover functions (filtered to stacks in this CDK project)
         yield* Console.log("[Local] Discovering Lambda functions...")
-        const functions = yield* discoverFunctions()
+        const functions = yield* discoverFunctions(stackFilter)
 
         if (functions.length === 0) {
           yield* Console.log(
@@ -715,7 +786,7 @@ export const localCommand = Command.make(
       cdkWatchProc = startCdkWatch({
         profile: profileValue,
         region: regionValue,
-        stacks: stackList,
+        stacks: stacksFromOption,
         onDeployComplete,
       })
 
