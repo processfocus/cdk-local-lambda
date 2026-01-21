@@ -428,15 +428,106 @@ const processContainerResponses = (
   })
 
 /**
+ * Ensure a container is started for a function.
+ * If the container already exists, return it.
+ * Otherwise, create the Runtime API server, add to containers map, and start the container.
+ */
+const ensureContainerStarted = (
+  fn: DiscoveredFunction,
+  containersRef: Ref.Ref<Map<string, FunctionContainer>>,
+  serverScope: Scope.Scope,
+  projectRoot: string,
+  appSyncClient: ReturnType<typeof makeAppSyncClient>,
+): Effect.Effect<FunctionContainer, Error> =>
+  Effect.gen(function* () {
+    // Check if container already exists
+    const currentContainers = yield* Ref.get(containersRef)
+    const existing = currentContainers.get(fn.functionName)
+    if (existing) {
+      return existing
+    }
+
+    // Container doesn't exist - start it lazily
+    yield* Console.log(
+      `[Local] Starting container for first invocation of ${fn.functionName}...`,
+    )
+
+    // Create Runtime API server on ephemeral port
+    const { port, state: runtimeState } = yield* startRuntimeApiServer().pipe(
+      Effect.provideService(Scope.Scope, serverScope),
+    )
+
+    // Generate container name
+    const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
+
+    // Create container object (without fiber initially - will be set after start)
+    // We add to map BEFORE starting container to handle concurrent invocations
+    const container: FunctionContainer = {
+      fn,
+      runtimeState,
+      port,
+      containerFiber: undefined as unknown as Fiber.RuntimeFiber<void, Error>, // Will be set shortly
+      containerName,
+      pendingResponses: new Map(),
+    }
+
+    // Add to map immediately to prevent race conditions
+    currentContainers.set(fn.functionName, container)
+    yield* Ref.set(containersRef, currentContainers)
+
+    // Build and start the container - remove from map on failure
+    const containerFiber = yield* startFunctionContainer(
+      fn,
+      port,
+      projectRoot,
+    ).pipe(
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          // Remove broken container from map on failure
+          yield* Console.error(
+            `[Local] Failed to start container for ${fn.functionName}: ${error}`,
+          )
+          const current = yield* Ref.get(containersRef)
+          current.delete(fn.functionName)
+          yield* Ref.set(containersRef, current)
+          return yield* Effect.fail(error)
+        }),
+      ),
+    )
+
+    // Update container with the fiber
+    container.containerFiber = containerFiber
+
+    // Start processing responses in the background
+    Effect.runFork(processContainerResponses(container, appSyncClient))
+
+    return container
+  })
+
+/**
  * Handle incoming invocations for a function by queueing them.
+ * Starts the container lazily if not already running.
  */
 const handleInvocation = (
-  container: FunctionContainer,
+  fn: DiscoveredFunction,
   invocation: InvocationMessage,
-): Effect.Effect<void> =>
+  containersRef: Ref.Ref<Map<string, FunctionContainer>>,
+  serverScope: Scope.Scope,
+  projectRoot: string,
+  appSyncClient: ReturnType<typeof makeAppSyncClient>,
+): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
+    // Ensure container is started (lazy startup on first invocation)
+    const container = yield* ensureContainerStarted(
+      fn,
+      containersRef,
+      serverScope,
+      projectRoot,
+      appSyncClient,
+    )
+
     yield* Console.log(
-      `[Local] Queueing invocation ${invocation.requestId} for ${container.fn.functionName}`,
+      `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
     )
 
     const lambdaInvocation: LambdaInvocation = {
@@ -444,9 +535,9 @@ const handleInvocation = (
       event: invocation.event,
       invokedFunctionArn: invocation.context.invokedFunctionArn,
       deadlineMs: Date.now() + invocation.context.getRemainingTimeInMillis,
-      functionName: container.fn.functionName,
+      functionName: fn.functionName,
       functionVersion: invocation.context.functionVersion,
-      memoryLimitMB: container.fn.memoryMB,
+      memoryLimitMB: fn.memoryMB,
       logGroupName: invocation.context.logGroupName,
       logStreamName: invocation.context.logStreamName,
     }
@@ -649,6 +740,11 @@ export const localCommand = Command.make(
         new Map(),
       )
 
+      // Track registered functions (for lazy container startup)
+      const registeredFunctions = yield* Ref.make<
+        Map<string, DiscoveredFunction>
+      >(new Map())
+
       // Project root is the current working directory (where CDK app lives)
       const projectRoot = process.cwd()
 
@@ -681,9 +777,9 @@ export const localCommand = Command.make(
           return
         }
 
-        const currentContainers = yield* Ref.get(containers)
+        const currentRegistered = yield* Ref.get(registeredFunctions)
 
-        // Start containers for new Docker functions
+        // Register functions and set up subscriptions (containers start lazily on first invocation)
         for (const fn of functions) {
           if (!fn.dockerContextPath) {
             yield* Console.log(
@@ -692,56 +788,20 @@ export const localCommand = Command.make(
             continue
           }
 
-          if (currentContainers.has(fn.functionName)) {
-            yield* Console.log(
-              `[Local] Container already running for ${fn.functionName}`,
-            )
+          if (currentRegistered.has(fn.functionName)) {
+            yield* Console.log(`[Local] Already watching ${fn.functionName}`)
             continue
           }
 
           yield* Console.log(
-            `[Local] Found: ${fn.functionName} -> Docker context: ${fn.dockerContextPath}`,
+            `[Local] Registered: ${fn.functionName} (container will start on first invocation)`,
           )
 
-          // Create Runtime API server on ephemeral port
-          // The server is scoped to serverScope which lives for the program duration
-          const { port, state: runtimeState } =
-            yield* startRuntimeApiServer().pipe(
-              Effect.provideService(Scope.Scope, serverScope),
-            )
-
-          // Generate container name (must match what makeLambdaContainerConfig uses)
-          const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
-
-          // Build and start the container from local Docker context
-          const containerFiber = yield* startFunctionContainer(
-            fn,
-            port,
-            projectRoot,
-          ).pipe(
-            Effect.catchAll((error) => {
-              Console.error(
-                `[Local] Failed to start container for ${fn.functionName}: ${error}`,
-              )
-              return Effect.fail(error)
-            }),
-          )
-
-          const container: FunctionContainer = {
-            fn,
-            runtimeState,
-            port,
-            containerFiber,
-            containerName,
-            pendingResponses: new Map(),
-          }
-
-          // Start processing responses in the background using runFork
-          Effect.runFork(processContainerResponses(container, appSyncClient!))
-
-          currentContainers.set(fn.functionName, container)
+          // Register the function
+          currentRegistered.set(fn.functionName, fn)
 
           // Subscribe to invocations for this function
+          // Container will be started lazily when first invocation arrives
           const invocationChannel = buildChannelName.invocation(fn.functionName)
           yield* Console.log(
             `[Local] Subscribing to invocations for ${fn.functionName}`,
@@ -753,7 +813,14 @@ export const localCommand = Command.make(
               .subscribeToInvocations(invocationChannel)
               .pipe(
                 Stream.runForEach((invocation) =>
-                  handleInvocation(container, invocation).pipe(
+                  handleInvocation(
+                    fn,
+                    invocation,
+                    containers,
+                    serverScope,
+                    projectRoot,
+                    appSyncClient!,
+                  ).pipe(
                     Effect.catchAll((error) =>
                       Console.error(`[Local] Invocation error: ${error}`),
                     ),
@@ -763,7 +830,7 @@ export const localCommand = Command.make(
           )
         }
 
-        yield* Ref.set(containers, currentContainers)
+        yield* Ref.set(registeredFunctions, currentRegistered)
         yield* Console.log("[Local] Watching for invocations...")
       })
 
