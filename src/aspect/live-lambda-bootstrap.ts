@@ -88,6 +88,7 @@ interface NodejsFunctionInstance {
 interface NodejsFunctionProps {
   entry?: string
   handler?: string
+  code?: unknown // lambda.Code - if provided, bundling is skipped
 }
 
 // Module type for the lambda exports
@@ -159,13 +160,36 @@ Module._load = function (
     patchNodejsFunction(result as LambdaNodejsModule | null)
   }
 
-  // Check if this is the lambda module (for DockerImageFunction)
+  // Check if this is the lambda module (for DockerImageFunction and Code.fromInline)
   if (isLambdaModule(request)) {
+    // Cache the lambda module so we can use Code.fromInline in NodejsFunction patch
+    cachedLambdaModule = result as LambdaModule | null
     patchDockerImageFunction(result as LambdaModule | null)
   }
 
   return result
 }
+
+/**
+ * Create a dummy inline code that does nothing.
+ * Used to skip bundling when CDK_LIVE=true.
+ */
+function createDummyCode(lambdaModule: LambdaModule): unknown {
+  // Access lambda.Code.fromInline to create a no-op code
+  // This avoids bundling entirely since we provide pre-built code
+  const Code = (
+    lambdaModule as unknown as {
+      Code?: { fromInline?: (code: string) => unknown }
+    }
+  ).Code
+  if (Code?.fromInline) {
+    return Code.fromInline("// Placeholder - replaced by LiveLambdaAspect")
+  }
+  return undefined
+}
+
+// Cache the lambda module for creating dummy code
+let cachedLambdaModule: LambdaModule | null = null
 
 /**
  * Patch NodejsFunction to capture entry and handler props
@@ -179,11 +203,22 @@ function patchNodejsFunction(module: LambdaNodejsModule | null): void {
   // Check if we can patch
   if (module?.NodejsFunction) {
     const OriginalNodejsFunction = module.NodejsFunction
+    const isLiveMode = process.env.CDK_LIVE === "true"
 
     // Create wrapper class that captures entry/handler props
     class NodejsFunctionWithCapture extends OriginalNodejsFunction {
       constructor(scope: unknown, id: string, props: NodejsFunctionProps = {}) {
-        super(scope, id, props)
+        // In live mode, provide dummy code to skip bundling entirely
+        // The aspect will replace this with the bridge code from S3
+        let modifiedProps = props
+        if (isLiveMode && !props.code && cachedLambdaModule) {
+          const dummyCode = createDummyCode(cachedLambdaModule)
+          if (dummyCode) {
+            modifiedProps = { ...props, code: dummyCode }
+          }
+        }
+
+        super(scope, id, modifiedProps)
 
         // Store the entry path on the instance (validate it's a non-empty string)
         if (typeof props.entry === "string" && props.entry.trim().length > 0) {

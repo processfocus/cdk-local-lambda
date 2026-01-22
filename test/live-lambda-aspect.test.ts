@@ -88,6 +88,44 @@ describe("LiveLambdaAspect property preservation", () => {
     })
   })
 
+  describe("preserves runtime", () => {
+    it("preserves Node.js 24 runtime for zip functions", () => {
+      const fn = new lambda.Function(stack, "Node24Function", {
+        runtime: lambda.Runtime.NODEJS_24_X,
+        handler: "index.handler",
+        code: lambda.Code.fromInline("exports.handler = () => {}"),
+      })
+
+      const aspect = new LiveLambdaAspect({
+        handlerMappings: { Node24Function: "src/handler.handler" },
+      })
+      cdk.Aspects.of(stack).add(aspect)
+
+      app.synth({ force: true, validateOnSynthesis: false })
+
+      const cfnFn = fn.node.defaultChild as lambda.CfnFunction
+      expect(cfnFn.runtime).toBe("nodejs24.x")
+    })
+
+    it("preserves Node.js 20 runtime for zip functions", () => {
+      const fn = new lambda.Function(stack, "Node20Function", {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: "index.handler",
+        code: lambda.Code.fromInline("exports.handler = () => {}"),
+      })
+
+      const aspect = new LiveLambdaAspect({
+        handlerMappings: { Node20Function: "src/handler.handler" },
+      })
+      cdk.Aspects.of(stack).add(aspect)
+
+      app.synth({ force: true, validateOnSynthesis: false })
+
+      const cfnFn = fn.node.defaultChild as lambda.CfnFunction
+      expect(cfnFn.runtime).toBe("nodejs20.x")
+    })
+  })
+
   describe("preserves architecture", () => {
     it("preserves x86_64 architecture", () => {
       const fn = new lambda.Function(stack, "X86Function", {

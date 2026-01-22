@@ -491,8 +491,9 @@ const startNodejsWorker = (
     )
     yield* Console.log(`[Local] Handler: ${fn.localHandler}`)
 
-    // Spawn Bun to run the runtime wrapper
-    const workerProcess = spawn("bun", ["run", runtimeWrapperPath], {
+    // Spawn Bun with --watch to automatically restart when handler files change
+    // This enables hot-reload without needing to restart the daemon
+    const workerProcess = spawn("bun", ["--watch", runtimeWrapperPath], {
       cwd: projectRoot,
       env: workerEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -868,7 +869,13 @@ const startCdkWatch = (options: {
   stacks?: string[]
   onDeployComplete: () => void
 }): ChildProcess => {
-  const args = ["cdk", "watch", "--hotswap-fallback", "--no-logs"]
+  const args = [
+    "cdk",
+    "watch",
+    "--hotswap-fallback",
+    "--no-logs",
+    "--method=direct",
+  ]
 
   if (options.stacks && options.stacks.length > 0) {
     args.push(...options.stacks)
@@ -898,13 +905,30 @@ const startCdkWatch = (options: {
     shell: true,
   })
 
-  // Pattern to detect deploy completion in CDK watch output
-  // CDK outputs "✅  StackName" or "Deployment time:" when deploy completes
+  // Patterns to detect CDK watch behavior
   const deployCompletePattern = /✅\s+\S+|Deployment time:/
+  const synthPattern = /Synthesizing|cdk\.out/i
+  const hotswapPattern = /hotswap|Hotswapping/i
+  const noChangesPattern = /no changes|identical|up to date/i
+  const bundlingPattern = /Bundling|esbuild/i
 
   const processOutput = (data: Buffer) => {
     const text = data.toString()
     process.stdout.write(text)
+
+    // Debug logging to understand CDK watch behavior
+    if (bundlingPattern.test(text)) {
+      console.log("[Local] CDK is bundling assets...")
+    }
+    if (synthPattern.test(text)) {
+      console.log("[Local] CDK is synthesizing...")
+    }
+    if (hotswapPattern.test(text)) {
+      console.log("[Local] CDK is attempting hotswap...")
+    }
+    if (noChangesPattern.test(text)) {
+      console.log("[Local] CDK detected no changes")
+    }
 
     // Check for deploy completion markers
     if (deployCompletePattern.test(text)) {

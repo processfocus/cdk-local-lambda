@@ -237,6 +237,7 @@ async function main(): Promise<void> {
   console.log(`[Runtime] Runtime API: ${RUNTIME_API}`)
 
   // Load handler once at startup
+  // Note: bun --watch automatically tracks dynamic imports and restarts when they change
   let handler: (event: unknown, context: Context) => Promise<unknown>
   try {
     handler = await loadHandler(HANDLER!, PROJECT_ROOT)

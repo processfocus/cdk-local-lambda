@@ -23,63 +23,63 @@ export interface CompleteStackProps extends cdk.StackProps {}
 
 export class CompleteStack extends cdk.Stack {
   /**
-   * The echo Lambda function (Docker)
+   * Docker echo Lambda function - returns the input event
    */
-  public readonly echoFunction: lambda.DockerImageFunction
+  public readonly dockerEcho: lambda.DockerImageFunction
 
   /**
-   * The adder Lambda function (Docker)
+   * Docker adder Lambda function - adds two numbers
    */
-  public readonly adderFunction: lambda.DockerImageFunction
+  public readonly dockerAdder: lambda.DockerImageFunction
 
   /**
-   * The greeter Lambda function (Node.js TypeScript)
+   * TypeScript greeter Lambda function
    */
-  public readonly greeterFunction: NodejsFunction
+  public readonly tsGreeter: NodejsFunction
 
   /**
-   * The calculator Lambda function (Node.js JavaScript)
+   * JavaScript calculator Lambda function
    */
-  public readonly calculatorFunction: NodejsFunction
+  public readonly jsCalculator: NodejsFunction
 
   constructor(scope: Construct, id: string, props?: CompleteStackProps) {
     super(scope, id, props)
 
-    // Create a DockerImageFunction using a Bun-based image
-    this.echoFunction = new lambda.DockerImageFunction(this, "EchoFunction", {
+    // Docker function: echo (ARM64)
+    this.dockerEcho = new lambda.DockerImageFunction(this, "DockerEcho", {
       code: lambda.DockerImageCode.fromImageAsset(
         path.join(__dirname, "..", "functions", "echo"),
       ),
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
-      description: "Echo Lambda function - returns the input event",
+      description: "Docker echo function - returns the input event",
     })
 
-    // Create an adder DockerImageFunction (x64 architecture)
-    this.adderFunction = new lambda.DockerImageFunction(this, "AdderFunction", {
+    // Docker function: adder (x86_64)
+    this.dockerAdder = new lambda.DockerImageFunction(this, "DockerAdder", {
       code: lambda.DockerImageCode.fromImageAsset(
         path.join(__dirname, "..", "functions", "adder"),
       ),
       architecture: lambda.Architecture.X86_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
-      description: "Adder Lambda function - adds two numbers",
+      description: "Docker adder function - adds two numbers",
     })
 
-    // Create a NodejsFunction with TypeScript handler
-    this.greeterFunction = new NodejsFunction(this, "GreeterFunction", {
+    // TypeScript function: greeter (ARM64)
+    this.tsGreeter = new NodejsFunction(this, "TsGreeter", {
       entry: path.join(__dirname, "..", "functions", "greeter", "handler.ts"),
       handler: "handler",
       runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
-      description: "Greeter Lambda function - TypeScript handler",
+      description: "TypeScript greeter function",
     })
 
-    // Create a NodejsFunction with JavaScript handler
-    this.calculatorFunction = new NodejsFunction(this, "CalculatorFunction", {
+    // JavaScript function: calculator (x86_64)
+    this.jsCalculator = new NodejsFunction(this, "JsCalculator", {
       entry: path.join(
         __dirname,
         "..",
@@ -92,48 +92,48 @@ export class CompleteStack extends cdk.Stack {
       architecture: lambda.Architecture.X86_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
-      description: "Calculator Lambda function - JavaScript handler",
+      description: "JavaScript calculator function",
     })
 
     // Output the function names and ARNs
-    new cdk.CfnOutput(this, "EchoFunctionName", {
-      value: this.echoFunction.functionName,
-      description: "Name of the echo function",
+    new cdk.CfnOutput(this, "DockerEchoName", {
+      value: this.dockerEcho.functionName,
+      description: "Name of the Docker echo function",
     })
 
-    new cdk.CfnOutput(this, "EchoFunctionArn", {
-      value: this.echoFunction.functionArn,
-      description: "ARN of the echo function",
+    new cdk.CfnOutput(this, "DockerEchoArn", {
+      value: this.dockerEcho.functionArn,
+      description: "ARN of the Docker echo function",
     })
 
-    new cdk.CfnOutput(this, "AdderFunctionName", {
-      value: this.adderFunction.functionName,
-      description: "Name of the adder function",
+    new cdk.CfnOutput(this, "DockerAdderName", {
+      value: this.dockerAdder.functionName,
+      description: "Name of the Docker adder function",
     })
 
-    new cdk.CfnOutput(this, "AdderFunctionArn", {
-      value: this.adderFunction.functionArn,
-      description: "ARN of the adder function",
+    new cdk.CfnOutput(this, "DockerAdderArn", {
+      value: this.dockerAdder.functionArn,
+      description: "ARN of the Docker adder function",
     })
 
-    new cdk.CfnOutput(this, "GreeterFunctionName", {
-      value: this.greeterFunction.functionName,
-      description: "Name of the greeter function",
+    new cdk.CfnOutput(this, "TsGreeterName", {
+      value: this.tsGreeter.functionName,
+      description: "Name of the TypeScript greeter function",
     })
 
-    new cdk.CfnOutput(this, "GreeterFunctionArn", {
-      value: this.greeterFunction.functionArn,
-      description: "ARN of the greeter function",
+    new cdk.CfnOutput(this, "TsGreeterArn", {
+      value: this.tsGreeter.functionArn,
+      description: "ARN of the TypeScript greeter function",
     })
 
-    new cdk.CfnOutput(this, "CalculatorFunctionName", {
-      value: this.calculatorFunction.functionName,
-      description: "Name of the calculator function",
+    new cdk.CfnOutput(this, "JsCalculatorName", {
+      value: this.jsCalculator.functionName,
+      description: "Name of the JavaScript calculator function",
     })
 
-    new cdk.CfnOutput(this, "CalculatorFunctionArn", {
-      value: this.calculatorFunction.functionArn,
-      description: "ARN of the calculator function",
+    new cdk.CfnOutput(this, "JsCalculatorArn", {
+      value: this.jsCalculator.functionArn,
+      description: "ARN of the JavaScript calculator function",
     })
   }
 }
