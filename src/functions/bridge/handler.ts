@@ -14,6 +14,7 @@
 import type { Context } from "aws-lambda"
 import {
   buildChannelName,
+  filterEnvVars,
   type InvocationMessage,
   type ResponseMessage,
 } from "../../shared/types.js"
@@ -50,7 +51,7 @@ export async function handler(
   const responseChannel = buildChannelName.response(functionName)
 
   try {
-    // Create the invocation message
+    // Create the invocation message with filtered env vars
     const invocationMessage: InvocationMessage = {
       type: "invocation",
       requestId,
@@ -65,6 +66,7 @@ export async function handler(
         logStreamName: context.logStreamName,
         getRemainingTimeInMillis: context.getRemainingTimeInMillis(),
       },
+      env: filterEnvVars(process.env),
     }
 
     // Subscribe to response channel first, then publish invocation

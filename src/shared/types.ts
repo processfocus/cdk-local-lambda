@@ -48,6 +48,61 @@ export interface InvocationMessage {
   requestId: string
   event: unknown
   context: LambdaContext
+  /** Lambda environment variables (forwarded from bridge on first invocation) */
+  env?: Record<string, string>
+}
+
+/**
+ * Environment variables to exclude when forwarding from Lambda.
+ * These are either Lambda internals or should use local values instead.
+ */
+export const EXCLUDED_ENV_VARS = new Set([
+  // Set locally by the daemon
+  "_HANDLER",
+  "LAMBDA_TASK_ROOT",
+  // Lambda runtime internals
+  "AWS_LAMBDA_RUNTIME_API",
+  "AWS_LAMBDA_INITIALIZATION_TYPE",
+  "AWS_EXECUTION_ENV",
+  "LAMBDA_RUNTIME_DIR",
+  // Internal sockets
+  "_LAMBDA_CONSOLE_SOCKET",
+  "_LAMBDA_CONTROL_SOCKET",
+  "_LAMBDA_LOG_FD",
+  "_LAMBDA_SHARED_MEM_FD",
+  "_LAMBDA_RUNTIME_LOAD_TIME",
+  "_LAMBDA_SB_ID",
+  "_LAMBDA_SERVER_PORT",
+  // X-Ray not available locally
+  "AWS_XRAY_DAEMON_ADDRESS",
+  "AWS_XRAY_CONTEXT_MISSING",
+  "_X_AMZN_TRACE_ID",
+  // System vars - use local values
+  "PATH",
+  "PWD",
+  "HOME",
+  "USER",
+  "SHELL",
+  "SHLVL",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "LD_LIBRARY_PATH",
+  "TZ",
+])
+
+/**
+ * Filter environment variables for forwarding to local execution.
+ * Removes Lambda internals and system variables that should use local values.
+ */
+export function filterEnvVars(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && !EXCLUDED_ENV_VARS.has(key)) {
+      result[key] = value
+    }
+  }
+  return result
 }
 
 export interface ResponseMessage {

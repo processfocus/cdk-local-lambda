@@ -94,6 +94,20 @@ interface FunctionContainer {
 }
 
 /**
+ * State for a running Node.js worker process.
+ */
+interface NodejsWorker {
+  fn: DiscoveredFunction
+  runtimeState: RuntimeApiState
+  /** The port the Runtime API server is listening on */
+  port: number
+  /** The spawned Bun process */
+  workerProcess: ChildProcess
+  /** Environment variables captured from first invocation */
+  env: Record<string, string>
+}
+
+/**
  * Check if bootstrap stack version matches the expected version.
  * Returns true if version matches, false if missing or mismatched.
  */
@@ -428,6 +442,214 @@ const processContainerResponses = (
   })
 
 /**
+ * Start a Node.js worker process for a function.
+ * Spawns Bun to run the runtime wrapper with the handler path.
+ * The worker continuously polls our Runtime API for invocations.
+ */
+const startNodejsWorker = (
+  fn: DiscoveredFunction,
+  port: number,
+  projectRoot: string,
+  env: Record<string, string>,
+): Effect.Effect<ChildProcess, Error> =>
+  Effect.gen(function* () {
+    if (!fn.localHandler) {
+      return yield* Effect.fail(
+        new Error(`Function ${fn.functionName} has no local handler path`),
+      )
+    }
+
+    // Resolve the runtime wrapper path relative to this module
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const runtimeWrapperPath = path.resolve(
+      __dirname,
+      "..",
+      "runtime-wrapper",
+      "nodejs-runtime.js",
+    )
+
+    // Build environment for the worker process
+    // Use env from invocation (AWS credentials, user-defined vars) + local overrides
+    // We need PATH from local environment for the bun executable to be found
+    const workerEnv: NodeJS.ProcessEnv = {
+      // Start with env vars from the bridge Lambda (AWS credentials, user-defined vars)
+      ...env,
+      // Local system vars needed for execution (PATH for finding bun, HOME for configs)
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      // Local overrides
+      AWS_LAMBDA_RUNTIME_API: `localhost:${port}`,
+      _HANDLER: fn.localHandler,
+      LAMBDA_TASK_ROOT: projectRoot,
+      // Memory limit for context object
+      AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(fn.memoryMB),
+    }
+
+    yield* Console.log(
+      `[Local] Starting Node.js worker for ${fn.functionName} on port ${port}`,
+    )
+    yield* Console.log(`[Local] Handler: ${fn.localHandler}`)
+
+    // Spawn Bun to run the runtime wrapper
+    const workerProcess = spawn("bun", ["run", runtimeWrapperPath], {
+      cwd: projectRoot,
+      env: workerEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    // Forward stdout/stderr with function name prefix
+    workerProcess.stdout?.on("data", (data: Buffer) => {
+      const lines = data.toString().trim().split("\n")
+      for (const line of lines) {
+        console.log(`[${fn.functionName}] ${line}`)
+      }
+    })
+
+    workerProcess.stderr?.on("data", (data: Buffer) => {
+      const lines = data.toString().trim().split("\n")
+      for (const line of lines) {
+        console.error(`[${fn.functionName}] ${line}`)
+      }
+    })
+
+    workerProcess.on("error", (err) => {
+      console.error(
+        `[Local] Worker error for ${fn.functionName}: ${err.message}`,
+      )
+    })
+
+    workerProcess.on("close", (code) => {
+      console.log(
+        `[Local] Worker for ${fn.functionName} exited with code ${code}`,
+      )
+    })
+
+    return workerProcess
+  })
+
+/**
+ * Process responses from a Node.js worker and dispatch to waiting callers.
+ */
+const processWorkerResponses = (
+  worker: NodejsWorker,
+  client: ReturnType<typeof makeAppSyncClient>,
+) =>
+  Effect.gen(function* () {
+    const responseChannel = buildChannelName.response(worker.fn.functionName)
+
+    // Continuously process responses from the worker
+    while (true) {
+      const result = yield* waitForResponse(worker.runtimeState)
+
+      let response: ResponseMessage
+      if (isLambdaResponse(result)) {
+        response = {
+          type: "response",
+          requestId: result.requestId,
+          result: result.body,
+        }
+      } else if (isLambdaError(result)) {
+        response = {
+          type: "response",
+          requestId: result.requestId,
+          error: {
+            errorType: result.errorType,
+            errorMessage: result.errorMessage,
+            stackTrace: result.stackTrace,
+          },
+        }
+      } else if (isLambdaInitError(result)) {
+        yield* Console.error(
+          `[Local] Worker init error: ${result.errorType}: ${result.errorMessage}`,
+        )
+        continue
+      } else {
+        continue
+      }
+
+      // Send response back via AppSync
+      yield* client.publishResponse(responseChannel, response)
+      yield* Console.log(`[Local] Sent response for ${response.requestId}`)
+    }
+  })
+
+/**
+ * Ensure a Node.js worker is started for a function.
+ * If the worker already exists, return it.
+ * Otherwise, create the Runtime API server, add to workers map, and start the worker.
+ */
+const ensureWorkerStarted = (
+  fn: DiscoveredFunction,
+  invocationEnv: Record<string, string>,
+  workersRef: Ref.Ref<Map<string, NodejsWorker>>,
+  serverScope: Scope.Scope,
+  projectRoot: string,
+  appSyncClient: ReturnType<typeof makeAppSyncClient>,
+): Effect.Effect<NodejsWorker, Error> =>
+  Effect.gen(function* () {
+    // Check if worker already exists
+    const currentWorkers = yield* Ref.get(workersRef)
+    const existing = currentWorkers.get(fn.functionName)
+    if (existing) {
+      return existing
+    }
+
+    // Worker doesn't exist - start it lazily
+    yield* Console.log(
+      `[Local] Starting Node.js worker for first invocation of ${fn.functionName}...`,
+    )
+
+    // Create Runtime API server on ephemeral port
+    const { port, state: runtimeState } = yield* startRuntimeApiServer().pipe(
+      Effect.provideService(Scope.Scope, serverScope),
+    )
+
+    // Create worker object (without process initially - will be set after start)
+    // We add to map BEFORE starting worker to handle concurrent invocations
+    const worker: NodejsWorker = {
+      fn,
+      runtimeState,
+      port,
+      workerProcess: undefined as unknown as ChildProcess, // Will be set shortly
+      env: invocationEnv,
+    }
+
+    // Add to map immediately to prevent race conditions
+    currentWorkers.set(fn.functionName, worker)
+    yield* Ref.set(workersRef, currentWorkers)
+
+    // Start the worker process - remove from map on failure
+    const workerProcess = yield* startNodejsWorker(
+      fn,
+      port,
+      projectRoot,
+      invocationEnv,
+    ).pipe(
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          // Remove broken worker from map on failure
+          yield* Console.error(
+            `[Local] Failed to start worker for ${fn.functionName}: ${error}`,
+          )
+          const current = yield* Ref.get(workersRef)
+          current.delete(fn.functionName)
+          yield* Ref.set(workersRef, current)
+          return yield* Effect.fail(error)
+        }),
+      ),
+    )
+
+    // Update worker with the process
+    worker.workerProcess = workerProcess
+
+    // Start processing responses in the background
+    Effect.runFork(processWorkerResponses(worker, appSyncClient))
+
+    return worker
+  })
+
+/**
  * Ensure a container is started for a function.
  * If the container already exists, return it.
  * Otherwise, create the Runtime API server, add to containers map, and start the container.
@@ -505,10 +727,10 @@ const ensureContainerStarted = (
   })
 
 /**
- * Handle incoming invocations for a function by queueing them.
+ * Handle incoming invocations for a Docker container function by queueing them.
  * Starts the container lazily if not already running.
  */
-const handleInvocation = (
+const handleDockerInvocation = (
   fn: DiscoveredFunction,
   invocation: InvocationMessage,
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
@@ -543,6 +765,51 @@ const handleInvocation = (
     }
 
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
+  })
+
+/**
+ * Handle incoming invocations for a Node.js function by queueing them.
+ * Starts the worker lazily if not already running.
+ */
+const handleNodejsInvocation = (
+  fn: DiscoveredFunction,
+  invocation: InvocationMessage,
+  workersRef: Ref.Ref<Map<string, NodejsWorker>>,
+  serverScope: Scope.Scope,
+  projectRoot: string,
+  appSyncClient: ReturnType<typeof makeAppSyncClient>,
+): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    // Get env vars from invocation (forwarded from bridge Lambda)
+    const invocationEnv = invocation.env ?? {}
+
+    // Ensure worker is started (lazy startup on first invocation)
+    const worker = yield* ensureWorkerStarted(
+      fn,
+      invocationEnv,
+      workersRef,
+      serverScope,
+      projectRoot,
+      appSyncClient,
+    )
+
+    yield* Console.log(
+      `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
+    )
+
+    const lambdaInvocation: LambdaInvocation = {
+      requestId: invocation.requestId,
+      event: invocation.event,
+      invokedFunctionArn: invocation.context.invokedFunctionArn,
+      deadlineMs: Date.now() + invocation.context.getRemainingTimeInMillis,
+      functionName: fn.functionName,
+      functionVersion: invocation.context.functionVersion,
+      memoryLimitMB: fn.memoryMB,
+      logGroupName: invocation.context.logGroupName,
+      logStreamName: invocation.context.logStreamName,
+    }
+
+    yield* queueInvocation(worker.runtimeState, lambdaInvocation)
   })
 
 /**
@@ -735,12 +1002,15 @@ export const localCommand = Command.make(
         region: regionValue,
       })
 
-      // Track running containers by function name
+      // Track running Docker containers by function name
       const containers = yield* Ref.make<Map<string, FunctionContainer>>(
         new Map(),
       )
 
-      // Track registered functions (for lazy container startup)
+      // Track running Node.js workers by function name
+      const workers = yield* Ref.make<Map<string, NodejsWorker>>(new Map())
+
+      // Track registered functions (for lazy container/worker startup)
       const registeredFunctions = yield* Ref.make<
         Map<string, DiscoveredFunction>
       >(new Map())
@@ -779,11 +1049,15 @@ export const localCommand = Command.make(
 
         const currentRegistered = yield* Ref.get(registeredFunctions)
 
-        // Register functions and set up subscriptions (containers start lazily on first invocation)
+        // Register functions and set up subscriptions (containers/workers start lazily on first invocation)
         for (const fn of functions) {
-          if (!fn.dockerContextPath) {
+          // Determine execution mode: Docker (has dockerContextPath) or Node.js (has localHandler only)
+          const isDocker = Boolean(fn.dockerContextPath)
+          const isNodejs = !isDocker && Boolean(fn.localHandler)
+
+          if (!isDocker && !isNodejs) {
             yield* Console.log(
-              `[Local] Skipping ${fn.functionName} - no Docker context (non-Docker function)`,
+              `[Local] Skipping ${fn.functionName} - no Docker context or local handler`,
             )
             continue
           }
@@ -793,41 +1067,70 @@ export const localCommand = Command.make(
             continue
           }
 
+          const mode = isDocker ? "Docker container" : "Node.js worker"
           yield* Console.log(
-            `[Local] Registered: ${fn.functionName} (container will start on first invocation)`,
+            `[Local] Registered: ${fn.functionName} (${mode} will start on first invocation)`,
           )
 
           // Register the function
           currentRegistered.set(fn.functionName, fn)
 
           // Subscribe to invocations for this function
-          // Container will be started lazily when first invocation arrives
+          // Container/worker will be started lazily when first invocation arrives
           const invocationChannel = buildChannelName.invocation(fn.functionName)
           yield* Console.log(
             `[Local] Subscribing to invocations for ${fn.functionName}`,
           )
 
           // Subscribe using runFork to run independently
-          Effect.runFork(
-            appSyncClient!
-              .subscribeToInvocations(invocationChannel)
-              .pipe(
-                Stream.runForEach((invocation) =>
-                  handleInvocation(
-                    fn,
-                    invocation,
-                    containers,
-                    serverScope,
-                    projectRoot,
-                    appSyncClient!,
-                  ).pipe(
-                    Effect.catchAll((error) =>
-                      Console.error(`[Local] Invocation error: ${error}`),
+          // Route to Docker or Node.js handler based on function type
+          if (isDocker) {
+            Effect.runFork(
+              appSyncClient!
+                .subscribeToInvocations(invocationChannel)
+                .pipe(
+                  Stream.runForEach((invocation) =>
+                    handleDockerInvocation(
+                      fn,
+                      invocation,
+                      containers,
+                      serverScope,
+                      projectRoot,
+                      appSyncClient!,
+                    ).pipe(
+                      Effect.catchAll((error) =>
+                        Console.error(
+                          `[Local] Docker invocation error: ${error}`,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-          )
+            )
+          } else {
+            Effect.runFork(
+              appSyncClient!
+                .subscribeToInvocations(invocationChannel)
+                .pipe(
+                  Stream.runForEach((invocation) =>
+                    handleNodejsInvocation(
+                      fn,
+                      invocation,
+                      workers,
+                      serverScope,
+                      projectRoot,
+                      appSyncClient!,
+                    ).pipe(
+                      Effect.catchAll((error) =>
+                        Console.error(
+                          `[Local] Node.js invocation error: ${error}`,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            )
+          }
         }
 
         yield* Ref.set(registeredFunctions, currentRegistered)
@@ -891,6 +1194,17 @@ export const localCommand = Command.make(
             )
           } catch {
             // Ignore errors - container may already be stopped
+          }
+        }
+
+        // Stop all Node.js workers
+        const currentWorkers = await Effect.runPromise(Ref.get(workers))
+        for (const [name, worker] of currentWorkers) {
+          console.log(`[Local] Stopping worker: ${name}`)
+          try {
+            worker.workerProcess.kill("SIGTERM")
+          } catch {
+            // Ignore errors - worker may already be stopped
           }
         }
 
