@@ -203,11 +203,11 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
       Effect.gen(function* () {
         const { url, subprotocols } = yield* buildSignedWebSocketConnection
 
-        yield* Effect.logInfo(`Connecting to ${url}`)
+        yield* Effect.logDebug(`Connecting to ${url}`)
 
         const ws = new WebSocket(url, [...subprotocols])
         ws.on("open", () => {
-          Effect.runSync(Effect.logInfo("WebSocket connected"))
+          Effect.runSync(Effect.logDebug("WebSocket connected"))
           ws.send(JSON.stringify({ type: "connection_init" }))
         })
 
@@ -228,7 +228,7 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
               }),
             )
           } else if (message.type === "subscribe_success") {
-            Effect.runSync(Effect.logInfo(`Subscribed to ${channel}`))
+            Effect.runSync(Effect.logDebug(`Subscribed to ${channel}`))
           } else if (message.type === "data" && message.id === "sub-1") {
             try {
               const eventData = JSON.parse(message.event) as T
@@ -258,14 +258,14 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
         })
 
         ws.on("close", () => {
-          Effect.runSync(Effect.logInfo("WebSocket closed"))
+          Effect.runSync(Effect.logDebug("WebSocket closed"))
           emit.end()
         })
 
         // Cleanup when scope closes
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            yield* Effect.logInfo("Closing WebSocket")
+            yield* Effect.logDebug("Closing WebSocket")
             ws.close()
           }),
         )

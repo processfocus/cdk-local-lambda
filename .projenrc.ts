@@ -54,6 +54,7 @@ const project = new typescript.TypeScriptProject({
     "@effect/language-service",
     "aws-cdk",
     "@types/aws-lambda",
+    "@types/node@24",
     "@types/ws",
     "@types/bun",
     "husky",

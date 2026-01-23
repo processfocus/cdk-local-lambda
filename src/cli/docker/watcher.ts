@@ -135,13 +135,13 @@ export const watchDockerContexts = (
 
       watcher.on("ready", () => {
         Effect.runSync(
-          Effect.logInfo(
+          Effect.logDebug(
             `Watching ${functions.length} Docker context(s) for changes`,
           ),
         )
         for (const fn of functions) {
           Effect.runSync(
-            Effect.logInfo(`  - ${fn.functionId}: ${fn.dockerContextPath}`),
+            Effect.logDebug(`  - ${fn.functionId}: ${fn.dockerContextPath}`),
           )
         }
       })
@@ -152,7 +152,7 @@ export const watchDockerContexts = (
           yield* Effect.promise(async () => {
             await watcher.close()
           })
-          yield* Effect.logInfo("DockerWatcher file watcher closed")
+          yield* Effect.logDebug("DockerWatcher file watcher closed")
         }),
       )
     }),

@@ -21,7 +21,17 @@ import {
 } from "@aws-sdk/client-lambda"
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
 import { Command, Options } from "@effect/cli"
-import { Effect, Exit, type Fiber, Ref, Schedule, Scope, Stream } from "effect"
+import {
+  Effect,
+  Exit,
+  type Fiber,
+  Logger,
+  LogLevel,
+  Ref,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect"
 import {
   BOOTSTRAP_STACK_NAME,
   BOOTSTRAP_VERSION,
@@ -201,7 +211,7 @@ const ensureBootstrap = (options: {
   region?: string
 }) =>
   Effect.gen(function* () {
-    yield* Effect.logInfo("[Local] Checking bootstrap stack version...")
+    yield* Effect.logDebug("[Local] Checking bootstrap stack version...")
 
     const versionOk = yield* checkBootstrapVersion(options.qualifier)
 
@@ -211,7 +221,7 @@ const ensureBootstrap = (options: {
       )
       yield* runBootstrap({ profile: options.profile, region: options.region })
     } else {
-      yield* Effect.logInfo("[Local] Bootstrap stack version OK.")
+      yield* Effect.logDebug("[Local] Bootstrap stack version OK.")
     }
   })
 
@@ -436,7 +446,7 @@ const processContainerResponses = (
 
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
-      yield* Effect.logInfo(`[Local] Sent response for ${response.requestId}`)
+      yield* Effect.logDebug(`[Local] Sent response for ${response.requestId}`)
     }
   })
 
@@ -488,7 +498,7 @@ const startNodejsWorker = (
     yield* Effect.logInfo(
       `[Local] Starting Node.js worker for ${fn.functionName} on port ${port}`,
     )
-    yield* Effect.logInfo(`[Local] Handler: ${fn.localHandler}`)
+    yield* Effect.logDebug(`[Local] Handler: ${fn.localHandler}`)
 
     // Spawn Bun with --watch to automatically restart when handler files change
     // This enables hot-reload without needing to restart the daemon
@@ -582,7 +592,7 @@ const processWorkerResponses = (
 
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
-      yield* Effect.logInfo(`[Local] Sent response for ${response.requestId}`)
+      yield* Effect.logDebug(`[Local] Sent response for ${response.requestId}`)
     }
   })
 
@@ -764,7 +774,7 @@ const rebuildDockerContainer = (
     // Mark as rebuilding - invocations will still queue but we log it
     container.isRebuilding = true
 
-    yield* Effect.logInfo(`[Local] Rebuilding container for ${functionId}...`)
+    yield* Effect.logDebug(`[Local] Rebuilding container for ${functionId}...`)
 
     // Stop the existing container
     const containerId = container.containerName
@@ -797,7 +807,7 @@ const rebuildDockerContainer = (
         }),
       ),
     )
-    yield* Effect.logInfo(`[Local] Container stop result: ${stopResult}`)
+    yield* Effect.logDebug(`[Local] Container stop result: ${stopResult}`)
 
     // Resolve the context path
     const fn = container.fn
@@ -839,7 +849,9 @@ const rebuildDockerContainer = (
     })
 
     // Start the new container
-    yield* Effect.logInfo(`[Local] Starting new container for ${functionId}...`)
+    yield* Effect.logDebug(
+      `[Local] Starting new container for ${functionId}...`,
+    )
 
     const newFiber = Effect.runFork(
       runDockerContainer(containerConfig).pipe(
@@ -867,7 +879,7 @@ const rebuildDockerContainer = (
     yield* Effect.sleep("2 seconds")
 
     container.isRebuilding = false
-    yield* Effect.logInfo(`[Local] Container rebuilt for ${functionId}`)
+    yield* Effect.logDebug(`[Local] Container rebuilt for ${functionId}`)
   })
 
 /**
@@ -920,7 +932,7 @@ const handleDockerInvocation = (
       `[Local] Queueing to Runtime API on port ${container.port}`,
     )
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
-    yield* Effect.logInfo(`[Local] Invocation queued successfully`)
+    yield* Effect.logDebug(`[Local] Invocation queued successfully`)
   })
 
 /**
@@ -969,59 +981,14 @@ const handleNodejsInvocation = (
   })
 
 /**
- * List all CDK stack names in the current project.
- * Uses `cdk list` to get stack names from the CDK app.
- */
-const listCdkStacks = (options: {
-  profile?: string
-  region?: string
-}): Effect.Effect<string[], Error> =>
-  Effect.gen(function* () {
-    const args = ["cdk", "list"]
-
-    if (options.profile) {
-      args.push("--profile", options.profile)
-    }
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-    }
-
-    if (options.region) {
-      env.AWS_REGION = options.region
-      env.CDK_DEFAULT_REGION = options.region
-    }
-
-    yield* Effect.logInfo("[Local] Discovering CDK stacks in project...")
-
-    const output = yield* Effect.try({
-      try: () =>
-        execSync(`npx ${args.join(" ")}`, {
-          encoding: "utf-8",
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-        }),
-      catch: (error) =>
-        new Error(`Failed to list CDK stacks: ${String(error)}`),
-    })
-
-    const stacks = output
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-
-    yield* Effect.logInfo(`[Local] Found stacks: ${stacks.join(", ")}`)
-
-    return stacks
-  })
-
-/**
  * Start CDK watch process with CDK_LIVE=true.
  */
 const startCdkWatch = (options: {
   profile?: string
   region?: string
   stacks?: string[]
+  all?: boolean
+  onStackDiscovered: (stackName: string) => void
   onDeployComplete: () => void
 }): ChildProcess => {
   const args = [
@@ -1034,9 +1001,10 @@ const startCdkWatch = (options: {
 
   if (options.stacks && options.stacks.length > 0) {
     args.push(...options.stacks)
-  } else {
+  } else if (options.all) {
     args.push("--all")
   }
+  // Otherwise, let CDK decide (fails if multiple stacks)
 
   if (options.profile) {
     args.push("--profile", options.profile)
@@ -1052,7 +1020,7 @@ const startCdkWatch = (options: {
     env.CDK_DEFAULT_REGION = options.region
   }
 
-  Effect.runSync(Effect.logInfo(`Starting: npx ${args.join(" ")}`))
+  Effect.runSync(Effect.logDebug(`Starting: npx ${args.join(" ")}`))
 
   const proc = spawn("npx", args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -1060,51 +1028,93 @@ const startCdkWatch = (options: {
     shell: true,
   })
 
+  // State tracking for deploy status messages
+  let isDeploying = false
+  let isFirstDeploy = true // First deploy message is shown at startup
+  let outputBuffer = ""
+  const discoveredStacks = new Set<string>()
+
   // Patterns to detect CDK watch behavior
   const deployCompletePattern = /✅\s+\S+|Deployment time:/
-  const synthPattern = /Synthesizing|cdk\.out/i
-  const hotswapPattern = /hotswap|Hotswapping/i
+  const deployStartPattern = /Deploying|hotswap|Hotswapping|Bundling/i
   const noChangesPattern = /no changes|identical|up to date/i
-  const bundlingPattern = /Bundling|esbuild/i
+  const errorPattern = /error|failed|Error|Failed|ERR!/i
+  // Pattern to extract stack name: "StackName: deploying..." or "✅  StackName"
+  const stackNamePattern = /^(\S+):\s*deploying|✅\s+(\S+)/
 
-  const processOutput = (data: Buffer) => {
+  const processOutput = (data: Buffer, isStderr: boolean) => {
     const text = data.toString()
-    process.stdout.write(text)
+    outputBuffer += text
 
-    // Debug logging to understand CDK watch behavior
-    if (bundlingPattern.test(text)) {
-      Effect.runSync(Effect.logDebug("CDK is bundling assets..."))
+    // Log all output at debug level
+    Effect.runSync(Effect.logDebug(`[CDK] ${text.trim()}`))
+
+    // Try to extract stack name from output
+    for (const line of text.split("\n")) {
+      const match = stackNamePattern.exec(line.trim())
+      if (match) {
+        const stackName = match[1] || match[2]
+        if (stackName && !discoveredStacks.has(stackName)) {
+          discoveredStacks.add(stackName)
+          options.onStackDiscovered(stackName)
+        }
+      }
     }
-    if (synthPattern.test(text)) {
-      Effect.runSync(Effect.logDebug("CDK is synthesizing..."))
+
+    // Detect deploy start
+    if (!isDeploying && deployStartPattern.test(text)) {
+      isDeploying = true
+      // Show message for subsequent deploys (first deploy message shown at startup)
+      if (!isFirstDeploy) {
+        Effect.runSync(Effect.logInfo("[CDK] Deploying..."))
+      }
     }
-    if (hotswapPattern.test(text)) {
-      Effect.runSync(Effect.logDebug("CDK is attempting hotswap..."))
-    }
-    if (noChangesPattern.test(text)) {
-      Effect.runSync(Effect.logDebug("CDK detected no changes"))
+
+    // Detect errors - output immediately
+    if (isStderr && errorPattern.test(text)) {
+      process.stderr.write(text)
     }
 
     // Check for deploy completion markers
     if (deployCompletePattern.test(text)) {
-      Effect.runSync(Effect.logInfo("Detected deploy completion"))
+      isDeploying = false
+      isFirstDeploy = false
+      outputBuffer = ""
+      Effect.runSync(Effect.logInfo("[CDK] Deploy complete"))
       // Small delay to ensure AWS has propagated the changes
       setTimeout(() => options.onDeployComplete(), 1000)
     }
+
+    // Check for no changes
+    if (noChangesPattern.test(text)) {
+      isDeploying = false
+      outputBuffer = ""
+    }
   }
 
-  proc.stdout?.on("data", processOutput)
-  proc.stderr?.on("data", (data: Buffer) => {
-    // CDK watch may output to stderr as well
-    processOutput(data)
-  })
+  proc.stdout?.on("data", (data: Buffer) => processOutput(data, false))
+  proc.stderr?.on("data", (data: Buffer) => processOutput(data, true))
 
   proc.on("error", (err) => {
-    Effect.runSync(Effect.logError(`CDK watch error: ${err.message}`))
+    Effect.runSync(Effect.logError(`[CDK] CDK watch error: ${err.message}`))
+    if (outputBuffer) {
+      process.stderr.write(outputBuffer)
+    }
   })
 
   proc.on("close", (code) => {
-    Effect.runSync(Effect.logInfo(`CDK watch exited with code ${code}`))
+    if (code !== 0 && code !== null) {
+      Effect.runSync(
+        Effect.logError(`[CDK] CDK watch exited with code ${code}`),
+      )
+      if (outputBuffer) {
+        process.stderr.write(outputBuffer)
+      }
+    } else {
+      Effect.runSync(
+        Effect.logDebug(`[CDK] CDK watch exited with code ${code}`),
+      )
+    }
   })
 
   return proc
@@ -1135,6 +1145,16 @@ const stacksOption = Options.text("stacks").pipe(
   ),
 )
 
+const allStacksOption = Options.boolean("all").pipe(
+  Options.withDefault(false),
+  Options.withDescription("Deploy all stacks (like cdk deploy --all)"),
+)
+
+const debugOption = Options.boolean("debug").pipe(
+  Options.withDefault(false),
+  Options.withDescription("Enable debug logging"),
+)
+
 /**
  * Local command definition.
  */
@@ -1145,9 +1165,12 @@ export const localCommand = Command.make(
     region: regionOption,
     qualifier: qualifierOption,
     stacks: stacksOption,
+    all: allStacksOption,
+    debug: debugOption,
   },
-  ({ profile, region, qualifier, stacks }) =>
-    Effect.gen(function* () {
+  ({ profile, region, qualifier, stacks, all, debug }) => {
+    const logLevel = debug ? LogLevel.Debug : LogLevel.Info
+    return Effect.gen(function* () {
       yield* Effect.logInfo("[Local] Starting local Lambda development...")
 
       const profileValue = profile._tag === "Some" ? profile.value : undefined
@@ -1164,21 +1187,52 @@ export const localCommand = Command.make(
         process.env.AWS_REGION = regionValue
       }
 
-      // Get the list of stacks from the CDK project
-      // If --stacks is provided, use that; otherwise discover all stacks in the project
-      const projectStacks = yield* listCdkStacks({
-        profile: profileValue,
-        region: regionValue,
-      })
-
-      // Use provided stacks or all project stacks for filtering
-      const stackFilter = stacksFromOption ?? projectStacks
-
-      // Ensure bootstrap stack is deployed with correct version
+      // Bootstrap check must complete first
       yield* ensureBootstrap({
         qualifier,
         profile: profileValue,
         region: regionValue,
+      })
+
+      // Stack filter - populated from CDK watch output, used to filter Lambda discovery
+      // Using object so closure in startOrUpdateDaemon sees updates
+      const filterState = { stacks: stacksFromOption ?? ([] as string[]) }
+
+      // Start CDK watch with deploy completion callback (defined later)
+      let cdkWatchProc: ChildProcess | null = null
+
+      const onStackDiscovered = (stackName: string) => {
+        // Add discovered stack to filter (if not using --stacks)
+        if (!stacksFromOption && !filterState.stacks.includes(stackName)) {
+          filterState.stacks.push(stackName)
+          Effect.runSync(
+            Effect.logDebug(`[Local] Discovered stack: ${stackName}`),
+          )
+        }
+      }
+
+      const onDeployComplete = () => {
+        Effect.runPromise(
+          startOrUpdateDaemon.pipe(
+            Effect.catchAll((error) =>
+              Effect.logError(`Failed to update daemon: ${error}`),
+            ),
+            Effect.provide(Logger.pretty),
+            Effect.provide(Logger.minimumLogLevel(logLevel)),
+          ),
+        )
+      }
+
+      // Start CDK watch immediately after bootstrap
+      // Stack names are discovered from CDK watch output (no need for separate cdk ls)
+      yield* Effect.logInfo("[CDK] Deploying...")
+      cdkWatchProc = startCdkWatch({
+        profile: profileValue,
+        region: regionValue,
+        stacks: stacksFromOption,
+        all,
+        onStackDiscovered,
+        onDeployComplete,
       })
 
       // Track running Docker containers by function name
@@ -1202,6 +1256,9 @@ export const localCommand = Command.make(
 
       let appSyncClient: ReturnType<typeof makeAppSyncClient> | null = null
 
+      // Track if we've logged the "Watching" message (only log once)
+      const logState = { hasLoggedWatching: false }
+
       // Create a long-lived scope for all Runtime API servers
       // Servers will run until this scope is closed (when the program ends)
       const serverScope = yield* Scope.make()
@@ -1210,19 +1267,21 @@ export const localCommand = Command.make(
       const startOrUpdateDaemon = Effect.gen(function* () {
         // Get AppSync endpoints (may need to wait for first deploy)
         if (!appSyncClient) {
-          yield* Effect.logInfo("[Local] Reading AppSync endpoints from SSM...")
+          yield* Effect.logDebug(
+            "[Local] Reading AppSync endpoints from SSM...",
+          )
           const endpoints = yield* getAppSyncEndpoints(qualifier).pipe(
             Effect.retry({ times: 10, schedule: Schedule.spaced("3 seconds") }),
           )
-          yield* Effect.logInfo(
+          yield* Effect.logDebug(
             `[Local] HTTP endpoint: ${endpoints.httpEndpoint}`,
           )
           appSyncClient = makeAppSyncClient(endpoints)
         }
 
         // Discover functions (filtered to stacks in this CDK project)
-        yield* Effect.logInfo("[Local] Discovering Lambda functions...")
-        const functions = yield* discoverFunctions(stackFilter)
+        yield* Effect.logDebug("[Local] Discovering Lambda functions...")
+        const functions = yield* discoverFunctions(filterState.stacks)
 
         if (functions.length === 0) {
           yield* Effect.logInfo(
@@ -1233,36 +1292,59 @@ export const localCommand = Command.make(
 
         const currentRegistered = yield* Ref.get(registeredFunctions)
 
-        // Register functions and set up subscriptions (containers/workers start lazily on first invocation)
+        // Collect new functions to register
+        const newFunctions: Array<{
+          fn: DiscoveredFunction
+          isDocker: boolean
+        }> = []
+
         for (const fn of functions) {
-          // Determine execution mode: Docker (has dockerContextPath) or Node.js (has localHandler only)
           const isDocker = Boolean(fn.dockerContextPath)
           const isNodejs = !isDocker && Boolean(fn.localHandler)
 
           if (!isDocker && !isNodejs) {
-            yield* Effect.logInfo(
+            yield* Effect.logDebug(
               `[Local] Skipping ${fn.functionName} - no Docker context or local handler`,
             )
             continue
           }
 
           if (currentRegistered.has(fn.functionName)) {
-            yield* Effect.logInfo(`[Local] Already watching ${fn.functionName}`)
+            yield* Effect.logDebug(
+              `[Local] Already watching ${fn.functionName}`,
+            )
             continue
           }
 
-          const mode = isDocker ? "Docker container" : "Node.js worker"
-          yield* Effect.logInfo(
-            `[Local] Registered: ${fn.functionName} (${mode} will start on first invocation)`,
+          newFunctions.push({ fn, isDocker })
+        }
+
+        // Print summary of discovered functions
+        if (newFunctions.length > 0) {
+          const summary = newFunctions
+            .map(({ fn, isDocker }) => {
+              const mode = isDocker ? "docker" : "node"
+              const shortName = fn.functionName.includes("-")
+                ? fn.functionName.split("-").slice(-2, -1)[0] || fn.functionName
+                : fn.functionName
+              return `${shortName} (${mode})`
+            })
+            .join(", ")
+          yield* Effect.logInfo(`[Local] Functions: ${summary}`)
+        }
+
+        // Register functions and set up subscriptions
+        for (const { fn, isDocker } of newFunctions) {
+          yield* Effect.logDebug(
+            `[Local] Registering ${fn.functionName} (${isDocker ? "Docker" : "Node.js"})`,
           )
 
           // Register the function
           currentRegistered.set(fn.functionName, fn)
 
           // Subscribe to invocations for this function
-          // Container/worker will be started lazily when first invocation arrives
           const invocationChannel = buildChannelName.invocation(fn.functionName)
-          yield* Effect.logInfo(
+          yield* Effect.logDebug(
             `[Local] Subscribing to invocations for ${fn.functionName}`,
           )
 
@@ -1341,7 +1423,7 @@ export const localCommand = Command.make(
 
         // Start watching new Docker contexts
         if (newDockerFunctions.length > 0) {
-          yield* Effect.logInfo(
+          yield* Effect.logDebug(
             `[Local] Starting file watchers for ${newDockerFunctions.length} Docker function(s)...`,
           )
 
@@ -1350,7 +1432,7 @@ export const localCommand = Command.make(
             watchDockerContexts(newDockerFunctions, 500).pipe(
               Stream.runForEach((event) =>
                 Effect.gen(function* () {
-                  yield* Effect.logInfo(
+                  yield* Effect.logDebug(
                     `[Local] File changed in ${event.functionId}: ${event.filePath}`,
                   )
                   yield* rebuildDockerContainer(
@@ -1370,42 +1452,14 @@ export const localCommand = Command.make(
           )
         }
 
-        yield* Effect.logInfo("[Local] Watching for invocations...")
+        if (!logState.hasLoggedWatching) {
+          logState.hasLoggedWatching = true
+          yield* Effect.logInfo("[Local] Watching for invocations...")
+        }
       })
 
-      // Start CDK watch with deploy completion callback
-      let cdkWatchProc: ChildProcess | null = null
-
-      const onDeployComplete = () => {
-        Effect.runSync(
-          Effect.logInfo("Deploy completed, re-discovering functions..."),
-        )
-        Effect.runPromise(
-          startOrUpdateDaemon.pipe(
-            Effect.catchAll((error) =>
-              Effect.logError(`Failed to update daemon: ${error}`),
-            ),
-          ),
-        )
-      }
-
-      cdkWatchProc = startCdkWatch({
-        profile: profileValue,
-        region: regionValue,
-        stacks: stacksFromOption,
-        onDeployComplete,
-      })
-
-      // Start daemon immediately (will discover existing functions)
-      // This runs in parallel with CDK watch's initial deploy
-      yield* Effect.logInfo("[Local] Starting daemon...")
-      yield* startOrUpdateDaemon.pipe(
-        Effect.catchAll((error) =>
-          Effect.logInfo(
-            `[Local] Initial discovery: ${error.message} (will retry after deploy)`,
-          ),
-        ),
-      )
+      // Daemon will start when CDK watch completes first deploy (via onDeployComplete)
+      // This ensures we have discovered the stack name from CDK output first
 
       // Handle cleanup on exit
       const cleanup = async () => {
@@ -1457,7 +1511,8 @@ export const localCommand = Command.make(
 
       // Keep the process running
       yield* Effect.never
-    }),
+    }).pipe(Effect.provide(Logger.minimumLogLevel(logLevel)))
+  },
 ).pipe(
   Command.withDescription(
     "Start local Lambda development with CDK watch and Docker containers",

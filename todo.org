@@ -4,26 +4,70 @@ CLOSED: [2026-01-09 Fri 14:15]
 CLOSED: [2026-01-10 Sat 19:13]
 * DONE handler.ts: don't replace endpoints at deploy time: use SSM parameters to pick them up
 CLOSED: [2026-01-10 Sat 19:13]
-* IN-PROGRESS Build daemon again with "local" command: just for docker
-* IN-PROGRESS Daemon needs to run cdk watch
-* TODO I have src/functions/bridge/appsync-client and src/cli/appsync/client.ts
+* DONE Build daemon again with "local" command: just for docker
+CLOSED: [2026-01-19 Mon 20:52]
+* DONE Daemon needs to run cdk watch
+CLOSED: [2026-01-19 Mon 20:52]
+* CANCELLED I have src/functions/bridge/appsync-client.ts and src/cli/appsync/client.ts
+CLOSED: [2026-01-19 Mon 20:53]
+- State "CANCELLED"  from "TODO"       [2026-01-19 Mon 20:53] \\
+  One for bridge, one for daemon.
   Are they doing similar things?
-* TODO Now support typescript.
-* TODO Do not always deploy bootstrap: simply check version
-* TODO Our bootstrap command should simply use the "compiled" yaml bootstrap, not run cdk
+* DONE I don't understand the tests
+CLOSED: [2026-01-20 Tue 09:38]
+* DONE Add second docker container
+CLOSED: [2026-01-21 Wed 18:48]
+* DONE Have this very odd Stopping container: CdkLiveLambdaStack-DockerTestFunction544BB9EC-R2oLujo7TNyy
+CLOSED: [2026-01-21 Wed 18:48]
+  What function is that??
+* DONE Should not start any http server or docker containers until called
+CLOSED: [2026-01-22 Thu 13:10]
+* DONE Now support typescript.
+CLOSED: [2026-01-22 Thu 19:08]
+* DONE Can lambda be live edited?
+CLOSED: [2026-01-23 Fri 18:00]
+* DONE Do not always deploy bootstrap: simply check version
+CLOSED: [2026-01-20 Tue 17:27]
+* DONE Does not restart when port 9001 is in use
+CLOSED: [2026-01-21 Wed 10:02]
+* DONE Switch to Effect HttpServer.
+CLOSED: [2026-01-21 Wed 10:02]
+* CANCELLED Our bootstrap command should simply use the "compiled" yaml bootstrap, not run cdk
+CLOSED: [2026-01-21 Wed 18:48]
+- State "CANCELLED"  from "TODO"       [2026-01-21 Wed 18:48] \\
+  I don't think that will work as we need to compile the docker images
+* IN-PROGRESS Change all logging to be Effect logging.
+* TODO Error when we just wait:
+  [Container] [ERROR] [1769144635941] LAMBDA_RUNTIME Failed to get next invocation. No Response from endpoint
+  [Container] node:internal/process/promises:394
+      triggerUncaughtException(err, true /* fromPromise */);
+      ^
+  [Error: Failed to get next invocation, error -1]
+
+  Node.js v24.13.0
+  [Docker] Container exited with code 1
+* TODO Check live editing lambda survives calls.
 * TODO Add test env var only comes in via first invoke
-* TODO Switch repo to processfocus: free publicity
-* Send patch to CDK to make entry & hander visible.
-* Container needs to restart on code changes
-* Restart container on crash
-* TODO Does not restart when port 9001 is in use
-* TODO rename hello.test.ts
-* TODO Drop shouldSkipIntegrationTests from test/setup.ts
-* TODO I don't understand the tests
+* TODO need test that env vars are only sent once
+* TODO Need test that only sent env vars make it into docker/lambda, no other local env var,
+  except what is normal/needed to run, but this is a whitelist only.
+* TODO Container needs to restart on code changes
+* TODO Restart container on crash
+* DONE rename hello.test.ts
+CLOSED: [2026-01-20 Tue 13:07]
+* DONE Drop shouldSkipIntegrationTests from test/setup.ts
+CLOSED: [2026-01-20 Tue 13:07]
 * TODO The logging is insane
+* TODO Tests for bridge appsync client
+* TODO On restart of node/docker we need to use the exact same env vars as in initial send
+* DONE Tests for live cdk: that we do not change important parameters
+CLOSED: [2026-01-20 Tue 13:07]
 
 
 Missed entire architecture
 - didn't implement the runtime environment
 - we didn't get cdk deploy and live mode with daemon
 - docker image was not a replacement
+* TODO Rename complete stack to LocalLiveLambdaExample
+* Send patch to CDK to make entry & hander visible.
+* TODO Switch repo to processfocus: free publicity
