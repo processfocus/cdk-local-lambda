@@ -63,14 +63,29 @@ export const makeRuntimeApiState = () =>
 
 /**
  * Handle GET /2018-06-01/runtime/invocation/next
- * Blocks until an invocation is available in the queue.
+ * Polls for an invocation with short timeouts to handle container restarts gracefully.
+ * This ensures that if the container disconnects during a rebuild, the invocation
+ * isn't lost - it remains in the queue for the new container to pick up.
  */
 const handleInvocationNext = (state: RuntimeApiState) =>
   Effect.gen(function* () {
     console.log("[RuntimeAPI] Container polling for next invocation...")
 
-    // Block until an invocation is available
-    const invocation = yield* Queue.take(state.invocationQueue)
+    // Poll with timeout instead of blocking indefinitely
+    // This allows us to detect connection issues and keep the invocation in the queue
+    let invocation: LambdaInvocation | null = null
+
+    while (invocation === null) {
+      // Try to take from queue with a short timeout
+      const result = yield* Queue.poll(state.invocationQueue)
+
+      if (Option.isSome(result)) {
+        invocation = result.value
+      } else {
+        // Queue is empty, wait a bit before retrying
+        yield* Effect.sleep("100 millis")
+      }
+    }
 
     console.log(
       `[RuntimeAPI] Returning invocation ${invocation.requestId} to container`,

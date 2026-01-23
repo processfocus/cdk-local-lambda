@@ -49,6 +49,10 @@ import {
   runDockerContainer,
 } from "../docker/container.js"
 import {
+  type WatchedDockerFunction,
+  watchDockerContexts,
+} from "../docker/watcher.js"
+import {
   queueInvocation,
   type RuntimeApiState,
   startRuntimeApiServer,
@@ -84,6 +88,10 @@ interface FunctionContainer {
   port: number
   containerFiber: Fiber.RuntimeFiber<void, Error>
   containerName: string
+  /** Docker image name for rebuilds */
+  imageName: string
+  /** Whether the container is currently being rebuilt (invocations will queue) */
+  isRebuilding: boolean
   /** Map of requestId -> response resolver */
   pendingResponses: Map<
     string,
@@ -680,8 +688,9 @@ const ensureContainerStarted = (
       Effect.provideService(Scope.Scope, serverScope),
     )
 
-    // Generate container name
+    // Generate container name and image name
     const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
+    const imageName = `live-lambda-${fn.functionName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`
 
     // Create container object (without fiber initially - will be set after start)
     // We add to map BEFORE starting container to handle concurrent invocations
@@ -691,6 +700,8 @@ const ensureContainerStarted = (
       port,
       containerFiber: undefined as unknown as Fiber.RuntimeFiber<void, Error>, // Will be set shortly
       containerName,
+      imageName,
+      isRebuilding: false,
       pendingResponses: new Map(),
     }
 
@@ -728,8 +739,138 @@ const ensureContainerStarted = (
   })
 
 /**
+ * Rebuild a Docker container after file changes.
+ * Invocations arriving during rebuild will be queued and picked up by the new container.
+ */
+const rebuildDockerContainer = (
+  functionId: string,
+  containersRef: Ref.Ref<Map<string, FunctionContainer>>,
+  projectRoot: string,
+): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    const containers = yield* Ref.get(containersRef)
+    const container = containers.get(functionId)
+
+    if (!container) {
+      yield* Console.log(
+        `[Local] Cannot rebuild ${functionId} - container not found`,
+      )
+      return
+    }
+
+    // Mark as rebuilding - invocations will still queue but we log it
+    container.isRebuilding = true
+
+    yield* Console.log(`[Local] Rebuilding container for ${functionId}...`)
+
+    // Stop the existing container
+    const containerId = container.containerName
+    yield* Console.log(
+      `[Local] Stopping container with name prefix: ${containerId}`,
+    )
+
+    const stopResult = yield* Effect.try(() => {
+      // First list matching containers
+      const containers = execSync(
+        `docker ps -q --filter "name=${containerId}"`,
+        { encoding: "utf-8" },
+      ).trim()
+
+      if (containers) {
+        console.log(
+          `[Local] Found containers to stop: ${containers.replace(/\n/g, ", ")}`,
+        )
+        execSync(`docker stop ${containers.replace(/\n/g, " ")}`, {
+          stdio: "inherit",
+        })
+        return "stopped"
+      }
+      return "none"
+    }).pipe(
+      Effect.catchAll((error) => {
+        console.log(`[Local] Note: Container stop had issue: ${error}`)
+        return Effect.succeed("error")
+      }),
+    )
+    yield* Console.log(`[Local] Container stop result: ${stopResult}`)
+
+    // Resolve the context path
+    const fn = container.fn
+    const contextPath = fn.dockerContextPath?.startsWith("/")
+      ? fn.dockerContextPath
+      : `${projectRoot}/${fn.dockerContextPath}`
+
+    // Determine platform from architecture
+    const platform = fn.architecture === "arm64" ? "linux/arm64" : "linux/amd64"
+
+    // Rebuild the Docker image
+    yield* buildDockerImage({
+      contextPath,
+      imageName: container.imageName,
+      platform,
+    })
+
+    // Restart the container by triggering container startup
+    // The existing fiber will have exited when we stopped the container
+    // We need to start a new one
+    const dockerRuntime = yield* detectDockerRuntime()
+    const runtimeApiHost = dockerRuntime.isDockerDesktop
+      ? "host.docker.internal"
+      : "runtime.api"
+
+    yield* Console.log(
+      `[Local] New container will connect to Runtime API at ${runtimeApiHost}:${container.port}`,
+    )
+
+    const containerConfig = makeLambdaContainerConfig({
+      imageUri: container.imageName,
+      runtimeApiHost,
+      runtimeApiPort: container.port,
+      functionName: fn.functionName,
+      functionVersion: "$LATEST",
+      memoryMB: fn.memoryMB,
+      timeoutSeconds: 3600,
+      platform,
+    })
+
+    // Start the new container
+    yield* Console.log(`[Local] Starting new container for ${functionId}...`)
+
+    const newFiber = Effect.runFork(
+      runDockerContainer(containerConfig).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (result.exitCode !== 0) {
+              console.error(
+                `[Local] Container for ${functionId} exited with code ${result.exitCode}`,
+              )
+              console.error(`[Local] stderr: ${result.stderr}`)
+            }
+          }),
+        ),
+        Effect.map(() => undefined as void),
+        Effect.catchAll((error) =>
+          Effect.sync(() => {
+            console.error(`[Local] Container error for ${functionId}: ${error}`)
+          }),
+        ),
+      ),
+    )
+
+    // Update the container state with the new fiber
+    container.containerFiber = newFiber
+
+    // Wait a moment for the container to start and begin polling
+    yield* Effect.sleep("2 seconds")
+
+    container.isRebuilding = false
+    yield* Console.log(`[Local] Container rebuilt for ${functionId}`)
+  })
+
+/**
  * Handle incoming invocations for a Docker container function by queueing them.
  * Starts the container lazily if not already running.
+ * Invocations are queued even if a rebuild is in progress - the new container will pick them up.
  */
 const handleDockerInvocation = (
   fn: DiscoveredFunction,
@@ -749,9 +890,16 @@ const handleDockerInvocation = (
       appSyncClient,
     )
 
-    yield* Console.log(
-      `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
-    )
+    // Log if queuing during a rebuild
+    if (container.isRebuilding) {
+      yield* Console.log(
+        `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName} (rebuild in progress, will be picked up by new container)`,
+      )
+    } else {
+      yield* Console.log(
+        `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
+      )
+    }
 
     const lambdaInvocation: LambdaInvocation = {
       requestId: invocation.requestId,
@@ -765,7 +913,11 @@ const handleDockerInvocation = (
       logStreamName: invocation.context.logStreamName,
     }
 
+    yield* Console.log(
+      `[Local] Queueing to Runtime API on port ${container.port}`,
+    )
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
+    yield* Console.log(`[Local] Invocation queued successfully`)
   })
 
 /**
@@ -1039,6 +1191,9 @@ export const localCommand = Command.make(
         Map<string, DiscoveredFunction>
       >(new Map())
 
+      // Track Docker functions with active file watchers
+      const watchedDockerFunctions = new Set<string>()
+
       // Project root is the current working directory (where CDK app lives)
       const projectRoot = process.cwd()
 
@@ -1158,6 +1313,58 @@ export const localCommand = Command.make(
         }
 
         yield* Ref.set(registeredFunctions, currentRegistered)
+
+        // Start file watchers for new Docker functions
+        const newDockerFunctions: WatchedDockerFunction[] = []
+        for (const fn of functions) {
+          if (
+            fn.dockerContextPath &&
+            !watchedDockerFunctions.has(fn.functionName)
+          ) {
+            // Resolve the context path
+            const contextPath = fn.dockerContextPath.startsWith("/")
+              ? fn.dockerContextPath
+              : `${projectRoot}/${fn.dockerContextPath}`
+
+            newDockerFunctions.push({
+              functionId: fn.functionName,
+              dockerContextPath: contextPath,
+            })
+            watchedDockerFunctions.add(fn.functionName)
+          }
+        }
+
+        // Start watching new Docker contexts
+        if (newDockerFunctions.length > 0) {
+          yield* Console.log(
+            `[Local] Starting file watchers for ${newDockerFunctions.length} Docker function(s)...`,
+          )
+
+          // Fork a fiber to handle file change events
+          Effect.runFork(
+            watchDockerContexts(newDockerFunctions, 500).pipe(
+              Stream.runForEach((event) =>
+                Effect.gen(function* () {
+                  yield* Console.log(
+                    `[Local] File changed in ${event.functionId}: ${event.filePath}`,
+                  )
+                  yield* rebuildDockerContainer(
+                    event.functionId,
+                    containers,
+                    projectRoot,
+                  ).pipe(
+                    Effect.catchAll((error) =>
+                      Console.error(
+                        `[Local] Rebuild failed for ${event.functionId}: ${error}`,
+                      ),
+                    ),
+                  )
+                }),
+              ),
+            ),
+          )
+        }
+
         yield* Console.log("[Local] Watching for invocations...")
       })
 

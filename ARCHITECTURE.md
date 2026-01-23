@@ -59,10 +59,15 @@ function channelName(functionName: string, direction: "in" | "out"): string {
 Run with:
 
 ```
-bun src/cli/index.ts live CdkLiveLambdaStack
+bun src/cli/index.ts local [--stacks StackName1,StackName2]
 ```
 
-This deploys the given stack in "live" mode.
+This starts the local development daemon which:
+1. Ensures the bootstrap stack is deployed
+2. Runs `cdk watch` with `CDK_LIVE=true` for hot reload
+3. Discovers Lambda functions with live-lambda tags
+4. Subscribes to invocation channels via AppSync
+5. Starts containers/workers lazily on first invocation
 
 # Requirements
 
@@ -280,17 +285,65 @@ This approach means we run the **user's actual Docker image** locally,
 not the bridge image. The bridge image only runs in AWS to relay
 messages to/from the local daemon.
 
+### Docker File Watching and Auto-Rebuild
+
+The daemon watches Docker context directories for file changes using
+chokidar. When any file in a Docker context changes:
+
+1. The file watcher detects the change (with 500ms debounce for batch operations)
+2. The daemon stops the running container
+3. Rebuilds the Docker image with `docker build`
+4. Starts a new container connected to the same Runtime API server
+
+**Key design: Queue is independent of container lifecycle**
+
+```
+                    Invocation arrives
+                          │
+                          ▼
+              ┌─────────────────────┐
+              │ Queue to Runtime    │  ◄── Always succeeds
+              │ API Server          │      (independent of container state)
+              └─────────────────────┘
+                          │
+                          ▼
+              ┌─────────────────────┐
+              │ Container polls     │  ◄── When container is ready
+              │ and picks up        │      (after rebuild completes)
+              └─────────────────────┘
+```
+
+The Runtime API server (invocation queue) is created once per function
+and persists across container rebuilds. This means:
+
+- Invocations arriving during a rebuild are queued normally
+- The new container connects to the same Runtime API server
+- Queued invocations are picked up when the new container starts polling
+
+Ignored patterns (don't trigger rebuild):
+- `.git/` directory
+- `node_modules/`
+- Dotfiles
+- `*.pyc`, `__pycache__/`, `*.class`, `*.o`, `*.log`
+
 ## TypeScript/Node.js Functions
 
 For TypeScript functions, the daemon:
 
 1. Reads the `live-lambda:handler` tag which contains the local handler
    path (e.g., `functions/my-func/handler.handler`).
-2. Spins up a Node.js process that loads the handler module.
+2. Spins up a worker process using `bun --watch` that loads the handler module.
 3. The process queries our Runtime API for invocations, just like the
    AWS Node.js runtime does.
 4. Invocations are handed off to the loaded handler function.
 5. Responses are returned via the Runtime API.
+
+### TypeScript Hot Reload
+
+The worker process is started with `bun --watch`, which automatically
+tracks dynamic imports and restarts the process when handler files
+change. This provides instant hot reload without needing separate file
+watching infrastructure.
 
 # CDK watch mode
 
