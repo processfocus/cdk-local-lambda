@@ -21,16 +21,7 @@ import {
 } from "@aws-sdk/client-lambda"
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
 import { Command, Options } from "@effect/cli"
-import {
-  Console,
-  Effect,
-  Exit,
-  type Fiber,
-  Ref,
-  Schedule,
-  Scope,
-  Stream,
-} from "effect"
+import { Effect, Exit, type Fiber, Ref, Schedule, Scope, Stream } from "effect"
 import {
   BOOTSTRAP_STACK_NAME,
   BOOTSTRAP_VERSION,
@@ -135,13 +126,13 @@ const checkBootstrapVersion = (qualifier: string) =>
     }).pipe(Effect.catchAll(() => Effect.succeed(null)))
 
     if (result === null) {
-      yield* Console.log("[Local] Bootstrap stack version parameter not found.")
+      yield* Effect.logInfo("Bootstrap stack version parameter not found")
       return false
     }
 
     if (result !== BOOTSTRAP_VERSION) {
-      yield* Console.log(
-        `[Local] Bootstrap stack version mismatch: found ${result}, expected ${BOOTSTRAP_VERSION}`,
+      yield* Effect.logInfo(
+        `Bootstrap stack version mismatch: found ${result}, expected ${BOOTSTRAP_VERSION}`,
       )
       return false
     }
@@ -154,7 +145,7 @@ const checkBootstrapVersion = (qualifier: string) =>
  */
 const runBootstrap = (options: { profile?: string; region?: string }) =>
   Effect.gen(function* () {
-    yield* Console.log("[Local] Running bootstrap stack deployment...")
+    yield* Effect.logInfo("Running bootstrap stack deployment...")
 
     // Resolve the CDK app path relative to this module
     const __filename = fileURLToPath(import.meta.url)
@@ -183,7 +174,7 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
     }
 
     const command = args.join(" ")
-    yield* Console.log(`[Local] Running: ${command}`)
+    yield* Effect.logInfo(`Running: ${command}`)
 
     yield* Effect.try({
       try: () => {
@@ -197,7 +188,7 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
       },
     })
 
-    yield* Console.log("[Local] Bootstrap stack deployed successfully!")
+    yield* Effect.logInfo("Bootstrap stack deployed successfully!")
   })
 
 /**
@@ -210,17 +201,17 @@ const ensureBootstrap = (options: {
   region?: string
 }) =>
   Effect.gen(function* () {
-    yield* Console.log("[Local] Checking bootstrap stack version...")
+    yield* Effect.logInfo("[Local] Checking bootstrap stack version...")
 
     const versionOk = yield* checkBootstrapVersion(options.qualifier)
 
     if (!versionOk) {
-      yield* Console.log(
+      yield* Effect.logInfo(
         "[Local] Bootstrap stack needs to be deployed or updated.",
       )
       yield* runBootstrap({ profile: options.profile, region: options.region })
     } else {
-      yield* Console.log("[Local] Bootstrap stack version OK.")
+      yield* Effect.logInfo("[Local] Bootstrap stack version OK.")
     }
   })
 
@@ -376,8 +367,8 @@ const startFunctionContainer = (
       platform,
     })
 
-    console.log(
-      `[Local] Starting container for ${fn.functionName} on port ${port}`,
+    yield* Effect.logInfo(
+      `Starting container for ${fn.functionName} on port ${port}`,
     )
 
     // Use Effect.runFork to run the container completely independently
@@ -435,7 +426,7 @@ const processContainerResponses = (
           },
         }
       } else if (isLambdaInitError(result)) {
-        yield* Console.error(
+        yield* Effect.logError(
           `[Local] Init error: ${result.errorType}: ${result.errorMessage}`,
         )
         continue
@@ -445,7 +436,7 @@ const processContainerResponses = (
 
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
-      yield* Console.log(`[Local] Sent response for ${response.requestId}`)
+      yield* Effect.logInfo(`[Local] Sent response for ${response.requestId}`)
     }
   })
 
@@ -494,10 +485,10 @@ const startNodejsWorker = (
       AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(fn.memoryMB),
     }
 
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Starting Node.js worker for ${fn.functionName} on port ${port}`,
     )
-    yield* Console.log(`[Local] Handler: ${fn.localHandler}`)
+    yield* Effect.logInfo(`[Local] Handler: ${fn.localHandler}`)
 
     // Spawn Bun with --watch to automatically restart when handler files change
     // This enables hot-reload without needing to restart the daemon
@@ -511,26 +502,38 @@ const startNodejsWorker = (
     workerProcess.stdout?.on("data", (data: Buffer) => {
       const lines = data.toString().trim().split("\n")
       for (const line of lines) {
-        console.log(`[${fn.functionName}] ${line}`)
+        Effect.runSync(
+          Effect.logInfo(line).pipe(
+            Effect.annotateLogs("function", fn.functionName),
+          ),
+        )
       }
     })
 
     workerProcess.stderr?.on("data", (data: Buffer) => {
       const lines = data.toString().trim().split("\n")
       for (const line of lines) {
-        console.error(`[${fn.functionName}] ${line}`)
+        Effect.runSync(
+          Effect.logError(line).pipe(
+            Effect.annotateLogs("function", fn.functionName),
+          ),
+        )
       }
     })
 
     workerProcess.on("error", (err) => {
-      console.error(
-        `[Local] Worker error for ${fn.functionName}: ${err.message}`,
+      Effect.runSync(
+        Effect.logError(`Worker error: ${err.message}`).pipe(
+          Effect.annotateLogs("function", fn.functionName),
+        ),
       )
     })
 
     workerProcess.on("close", (code) => {
-      console.log(
-        `[Local] Worker for ${fn.functionName} exited with code ${code}`,
+      Effect.runSync(
+        Effect.logInfo(`Worker exited with code ${code}`).pipe(
+          Effect.annotateLogs("function", fn.functionName),
+        ),
       )
     })
 
@@ -569,7 +572,7 @@ const processWorkerResponses = (
           },
         }
       } else if (isLambdaInitError(result)) {
-        yield* Console.error(
+        yield* Effect.logError(
           `[Local] Worker init error: ${result.errorType}: ${result.errorMessage}`,
         )
         continue
@@ -579,7 +582,7 @@ const processWorkerResponses = (
 
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
-      yield* Console.log(`[Local] Sent response for ${response.requestId}`)
+      yield* Effect.logInfo(`[Local] Sent response for ${response.requestId}`)
     }
   })
 
@@ -605,7 +608,7 @@ const ensureWorkerStarted = (
     }
 
     // Worker doesn't exist - start it lazily
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Starting Node.js worker for first invocation of ${fn.functionName}...`,
     )
 
@@ -638,7 +641,7 @@ const ensureWorkerStarted = (
       Effect.catchAll((error) =>
         Effect.gen(function* () {
           // Remove broken worker from map on failure
-          yield* Console.error(
+          yield* Effect.logError(
             `[Local] Failed to start worker for ${fn.functionName}: ${error}`,
           )
           const current = yield* Ref.get(workersRef)
@@ -679,7 +682,7 @@ const ensureContainerStarted = (
     }
 
     // Container doesn't exist - start it lazily
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Starting container for first invocation of ${fn.functionName}...`,
     )
 
@@ -718,7 +721,7 @@ const ensureContainerStarted = (
       Effect.catchAll((error) =>
         Effect.gen(function* () {
           // Remove broken container from map on failure
-          yield* Console.error(
+          yield* Effect.logError(
             `[Local] Failed to start container for ${fn.functionName}: ${error}`,
           )
           const current = yield* Ref.get(containersRef)
@@ -752,7 +755,7 @@ const rebuildDockerContainer = (
     const container = containers.get(functionId)
 
     if (!container) {
-      yield* Console.log(
+      yield* Effect.logInfo(
         `[Local] Cannot rebuild ${functionId} - container not found`,
       )
       return
@@ -761,38 +764,40 @@ const rebuildDockerContainer = (
     // Mark as rebuilding - invocations will still queue but we log it
     container.isRebuilding = true
 
-    yield* Console.log(`[Local] Rebuilding container for ${functionId}...`)
+    yield* Effect.logInfo(`[Local] Rebuilding container for ${functionId}...`)
 
     // Stop the existing container
     const containerId = container.containerName
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Stopping container with name prefix: ${containerId}`,
     )
 
-    const stopResult = yield* Effect.try(() => {
+    const stopResult = yield* Effect.gen(function* () {
       // First list matching containers
-      const containers = execSync(
+      const containersOutput = execSync(
         `docker ps -q --filter "name=${containerId}"`,
         { encoding: "utf-8" },
       ).trim()
 
-      if (containers) {
-        console.log(
-          `[Local] Found containers to stop: ${containers.replace(/\n/g, ", ")}`,
+      if (containersOutput) {
+        yield* Effect.logInfo(
+          `Found containers to stop: ${containersOutput.replace(/\n/g, ", ")}`,
         )
-        execSync(`docker stop ${containers.replace(/\n/g, " ")}`, {
+        execSync(`docker stop ${containersOutput.replace(/\n/g, " ")}`, {
           stdio: "inherit",
         })
         return "stopped"
       }
       return "none"
     }).pipe(
-      Effect.catchAll((error) => {
-        console.log(`[Local] Note: Container stop had issue: ${error}`)
-        return Effect.succeed("error")
-      }),
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          yield* Effect.logInfo(`Note: Container stop had issue: ${error}`)
+          return "error"
+        }),
+      ),
     )
-    yield* Console.log(`[Local] Container stop result: ${stopResult}`)
+    yield* Effect.logInfo(`[Local] Container stop result: ${stopResult}`)
 
     // Resolve the context path
     const fn = container.fn
@@ -818,7 +823,7 @@ const rebuildDockerContainer = (
       ? "host.docker.internal"
       : "runtime.api"
 
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] New container will connect to Runtime API at ${runtimeApiHost}:${container.port}`,
     )
 
@@ -834,25 +839,23 @@ const rebuildDockerContainer = (
     })
 
     // Start the new container
-    yield* Console.log(`[Local] Starting new container for ${functionId}...`)
+    yield* Effect.logInfo(`[Local] Starting new container for ${functionId}...`)
 
     const newFiber = Effect.runFork(
       runDockerContainer(containerConfig).pipe(
         Effect.tap((result) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             if (result.exitCode !== 0) {
-              console.error(
-                `[Local] Container for ${functionId} exited with code ${result.exitCode}`,
+              yield* Effect.logError(
+                `Container for ${functionId} exited with code ${result.exitCode}`,
               )
-              console.error(`[Local] stderr: ${result.stderr}`)
+              yield* Effect.logError(`stderr: ${result.stderr}`)
             }
           }),
         ),
         Effect.map(() => undefined as void),
         Effect.catchAll((error) =>
-          Effect.sync(() => {
-            console.error(`[Local] Container error for ${functionId}: ${error}`)
-          }),
+          Effect.logError(`Container error for ${functionId}: ${error}`),
         ),
       ),
     )
@@ -864,7 +867,7 @@ const rebuildDockerContainer = (
     yield* Effect.sleep("2 seconds")
 
     container.isRebuilding = false
-    yield* Console.log(`[Local] Container rebuilt for ${functionId}`)
+    yield* Effect.logInfo(`[Local] Container rebuilt for ${functionId}`)
   })
 
 /**
@@ -892,11 +895,11 @@ const handleDockerInvocation = (
 
     // Log if queuing during a rebuild
     if (container.isRebuilding) {
-      yield* Console.log(
+      yield* Effect.logInfo(
         `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName} (rebuild in progress, will be picked up by new container)`,
       )
     } else {
-      yield* Console.log(
+      yield* Effect.logInfo(
         `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
       )
     }
@@ -913,11 +916,11 @@ const handleDockerInvocation = (
       logStreamName: invocation.context.logStreamName,
     }
 
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Queueing to Runtime API on port ${container.port}`,
     )
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
-    yield* Console.log(`[Local] Invocation queued successfully`)
+    yield* Effect.logInfo(`[Local] Invocation queued successfully`)
   })
 
 /**
@@ -946,7 +949,7 @@ const handleNodejsInvocation = (
       appSyncClient,
     )
 
-    yield* Console.log(
+    yield* Effect.logInfo(
       `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
     )
 
@@ -989,7 +992,7 @@ const listCdkStacks = (options: {
       env.CDK_DEFAULT_REGION = options.region
     }
 
-    yield* Console.log("[Local] Discovering CDK stacks in project...")
+    yield* Effect.logInfo("[Local] Discovering CDK stacks in project...")
 
     const output = yield* Effect.try({
       try: () =>
@@ -1007,7 +1010,7 @@ const listCdkStacks = (options: {
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
 
-    yield* Console.log(`[Local] Found stacks: ${stacks.join(", ")}`)
+    yield* Effect.logInfo(`[Local] Found stacks: ${stacks.join(", ")}`)
 
     return stacks
   })
@@ -1049,7 +1052,7 @@ const startCdkWatch = (options: {
     env.CDK_DEFAULT_REGION = options.region
   }
 
-  console.log(`[Local] Starting: npx ${args.join(" ")}`)
+  Effect.runSync(Effect.logInfo(`Starting: npx ${args.join(" ")}`))
 
   const proc = spawn("npx", args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -1070,21 +1073,21 @@ const startCdkWatch = (options: {
 
     // Debug logging to understand CDK watch behavior
     if (bundlingPattern.test(text)) {
-      console.log("[Local] CDK is bundling assets...")
+      Effect.runSync(Effect.logDebug("CDK is bundling assets..."))
     }
     if (synthPattern.test(text)) {
-      console.log("[Local] CDK is synthesizing...")
+      Effect.runSync(Effect.logDebug("CDK is synthesizing..."))
     }
     if (hotswapPattern.test(text)) {
-      console.log("[Local] CDK is attempting hotswap...")
+      Effect.runSync(Effect.logDebug("CDK is attempting hotswap..."))
     }
     if (noChangesPattern.test(text)) {
-      console.log("[Local] CDK detected no changes")
+      Effect.runSync(Effect.logDebug("CDK detected no changes"))
     }
 
     // Check for deploy completion markers
     if (deployCompletePattern.test(text)) {
-      console.log("[Local] Detected deploy completion")
+      Effect.runSync(Effect.logInfo("Detected deploy completion"))
       // Small delay to ensure AWS has propagated the changes
       setTimeout(() => options.onDeployComplete(), 1000)
     }
@@ -1097,11 +1100,11 @@ const startCdkWatch = (options: {
   })
 
   proc.on("error", (err) => {
-    console.error(`[Local] CDK watch error: ${err.message}`)
+    Effect.runSync(Effect.logError(`CDK watch error: ${err.message}`))
   })
 
   proc.on("close", (code) => {
-    console.log(`[Local] CDK watch exited with code ${code}`)
+    Effect.runSync(Effect.logInfo(`CDK watch exited with code ${code}`))
   })
 
   return proc
@@ -1145,7 +1148,7 @@ export const localCommand = Command.make(
   },
   ({ profile, region, qualifier, stacks }) =>
     Effect.gen(function* () {
-      yield* Console.log("[Local] Starting local Lambda development...")
+      yield* Effect.logInfo("[Local] Starting local Lambda development...")
 
       const profileValue = profile._tag === "Some" ? profile.value : undefined
       const regionValue = region._tag === "Some" ? region.value : undefined
@@ -1207,20 +1210,22 @@ export const localCommand = Command.make(
       const startOrUpdateDaemon = Effect.gen(function* () {
         // Get AppSync endpoints (may need to wait for first deploy)
         if (!appSyncClient) {
-          yield* Console.log("[Local] Reading AppSync endpoints from SSM...")
+          yield* Effect.logInfo("[Local] Reading AppSync endpoints from SSM...")
           const endpoints = yield* getAppSyncEndpoints(qualifier).pipe(
             Effect.retry({ times: 10, schedule: Schedule.spaced("3 seconds") }),
           )
-          yield* Console.log(`[Local] HTTP endpoint: ${endpoints.httpEndpoint}`)
+          yield* Effect.logInfo(
+            `[Local] HTTP endpoint: ${endpoints.httpEndpoint}`,
+          )
           appSyncClient = makeAppSyncClient(endpoints)
         }
 
         // Discover functions (filtered to stacks in this CDK project)
-        yield* Console.log("[Local] Discovering Lambda functions...")
+        yield* Effect.logInfo("[Local] Discovering Lambda functions...")
         const functions = yield* discoverFunctions(stackFilter)
 
         if (functions.length === 0) {
-          yield* Console.log(
+          yield* Effect.logInfo(
             "[Local] No functions found with live-lambda tags yet.",
           )
           return
@@ -1235,19 +1240,19 @@ export const localCommand = Command.make(
           const isNodejs = !isDocker && Boolean(fn.localHandler)
 
           if (!isDocker && !isNodejs) {
-            yield* Console.log(
+            yield* Effect.logInfo(
               `[Local] Skipping ${fn.functionName} - no Docker context or local handler`,
             )
             continue
           }
 
           if (currentRegistered.has(fn.functionName)) {
-            yield* Console.log(`[Local] Already watching ${fn.functionName}`)
+            yield* Effect.logInfo(`[Local] Already watching ${fn.functionName}`)
             continue
           }
 
           const mode = isDocker ? "Docker container" : "Node.js worker"
-          yield* Console.log(
+          yield* Effect.logInfo(
             `[Local] Registered: ${fn.functionName} (${mode} will start on first invocation)`,
           )
 
@@ -1257,7 +1262,7 @@ export const localCommand = Command.make(
           // Subscribe to invocations for this function
           // Container/worker will be started lazily when first invocation arrives
           const invocationChannel = buildChannelName.invocation(fn.functionName)
-          yield* Console.log(
+          yield* Effect.logInfo(
             `[Local] Subscribing to invocations for ${fn.functionName}`,
           )
 
@@ -1278,7 +1283,7 @@ export const localCommand = Command.make(
                       appSyncClient!,
                     ).pipe(
                       Effect.catchAll((error) =>
-                        Console.error(
+                        Effect.logError(
                           `[Local] Docker invocation error: ${error}`,
                         ),
                       ),
@@ -1301,7 +1306,7 @@ export const localCommand = Command.make(
                       appSyncClient!,
                     ).pipe(
                       Effect.catchAll((error) =>
-                        Console.error(
+                        Effect.logError(
                           `[Local] Node.js invocation error: ${error}`,
                         ),
                       ),
@@ -1336,7 +1341,7 @@ export const localCommand = Command.make(
 
         // Start watching new Docker contexts
         if (newDockerFunctions.length > 0) {
-          yield* Console.log(
+          yield* Effect.logInfo(
             `[Local] Starting file watchers for ${newDockerFunctions.length} Docker function(s)...`,
           )
 
@@ -1345,7 +1350,7 @@ export const localCommand = Command.make(
             watchDockerContexts(newDockerFunctions, 500).pipe(
               Stream.runForEach((event) =>
                 Effect.gen(function* () {
-                  yield* Console.log(
+                  yield* Effect.logInfo(
                     `[Local] File changed in ${event.functionId}: ${event.filePath}`,
                   )
                   yield* rebuildDockerContainer(
@@ -1354,7 +1359,7 @@ export const localCommand = Command.make(
                     projectRoot,
                   ).pipe(
                     Effect.catchAll((error) =>
-                      Console.error(
+                      Effect.logError(
                         `[Local] Rebuild failed for ${event.functionId}: ${error}`,
                       ),
                     ),
@@ -1365,20 +1370,20 @@ export const localCommand = Command.make(
           )
         }
 
-        yield* Console.log("[Local] Watching for invocations...")
+        yield* Effect.logInfo("[Local] Watching for invocations...")
       })
 
       // Start CDK watch with deploy completion callback
       let cdkWatchProc: ChildProcess | null = null
 
       const onDeployComplete = () => {
-        console.log("[Local] Deploy completed, re-discovering functions...")
+        Effect.runSync(
+          Effect.logInfo("Deploy completed, re-discovering functions..."),
+        )
         Effect.runPromise(
           startOrUpdateDaemon.pipe(
             Effect.catchAll((error) =>
-              Effect.sync(() =>
-                console.error(`[Local] Failed to update daemon: ${error}`),
-              ),
+              Effect.logError(`Failed to update daemon: ${error}`),
             ),
           ),
         )
@@ -1393,10 +1398,10 @@ export const localCommand = Command.make(
 
       // Start daemon immediately (will discover existing functions)
       // This runs in parallel with CDK watch's initial deploy
-      yield* Console.log("[Local] Starting daemon...")
+      yield* Effect.logInfo("[Local] Starting daemon...")
       yield* startOrUpdateDaemon.pipe(
         Effect.catchAll((error) =>
-          Console.log(
+          Effect.logInfo(
             `[Local] Initial discovery: ${error.message} (will retry after deploy)`,
           ),
         ),
@@ -1404,7 +1409,7 @@ export const localCommand = Command.make(
 
       // Handle cleanup on exit
       const cleanup = async () => {
-        console.log("\n[Local] Shutting down...")
+        Effect.runSync(Effect.logInfo("\nShutting down..."))
 
         // Stop CDK watch
         if (cdkWatchProc) {
@@ -1416,7 +1421,7 @@ export const localCommand = Command.make(
         // cleaned up when the scope closes (process exit)
         const currentContainers = await Effect.runPromise(Ref.get(containers))
         for (const [name, container] of currentContainers) {
-          console.log(`[Local] Stopping container: ${name}`)
+          Effect.runSync(Effect.logInfo(`Stopping container: ${name}`))
           // Stop the Docker container (find by name prefix)
           try {
             execSync(
@@ -1431,7 +1436,7 @@ export const localCommand = Command.make(
         // Stop all Node.js workers
         const currentWorkers = await Effect.runPromise(Ref.get(workers))
         for (const [name, worker] of currentWorkers) {
-          console.log(`[Local] Stopping worker: ${name}`)
+          Effect.runSync(Effect.logInfo(`Stopping worker: ${name}`))
           try {
             worker.workerProcess.kill("SIGTERM")
           } catch {
@@ -1448,7 +1453,7 @@ export const localCommand = Command.make(
       process.on("SIGINT", cleanup)
       process.on("SIGTERM", cleanup)
 
-      yield* Console.log("[Local] Press Ctrl+C to stop")
+      yield* Effect.logInfo("[Local] Press Ctrl+C to stop")
 
       // Keep the process running
       yield* Effect.never

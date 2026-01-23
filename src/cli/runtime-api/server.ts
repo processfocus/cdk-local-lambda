@@ -69,7 +69,7 @@ export const makeRuntimeApiState = () =>
  */
 const handleInvocationNext = (state: RuntimeApiState) =>
   Effect.gen(function* () {
-    console.log("[RuntimeAPI] Container polling for next invocation...")
+    yield* Effect.logDebug("Container polling for next invocation")
 
     // Poll with timeout instead of blocking indefinitely
     // This allows us to detect connection issues and keep the invocation in the queue
@@ -87,8 +87,8 @@ const handleInvocationNext = (state: RuntimeApiState) =>
       }
     }
 
-    console.log(
-      `[RuntimeAPI] Returning invocation ${invocation.requestId} to container`,
+    yield* Effect.logDebug(
+      `Returning invocation ${invocation.requestId} to container`,
     )
 
     return yield* HttpServerResponse.json(invocation.event, {
@@ -120,7 +120,7 @@ const handleInvocationResponse = (state: RuntimeApiState) =>
       body,
     }
 
-    console.log(`[RuntimeAPI] Received response for ${requestId}`)
+    yield* Effect.logDebug(`Received response for ${requestId}`)
     yield* Queue.offer(state.responseQueue, response)
 
     return HttpServerResponse.empty({ status: 202 })
@@ -157,8 +157,8 @@ const handleInvocationError = (state: RuntimeApiState) =>
       stackTrace: errorBody.stackTrace,
     }
 
-    console.log(
-      `[RuntimeAPI] Received error for ${requestId}: ${error.errorMessage}`,
+    yield* Effect.logDebug(
+      `Received error for ${requestId}: ${error.errorMessage}`,
     )
     yield* Queue.offer(state.responseQueue, error)
 
@@ -193,7 +193,7 @@ const handleInitError = (state: RuntimeApiState) =>
       stackTrace: errorBody.stackTrace,
     }
 
-    console.log(`[RuntimeAPI] Received init error: ${error.errorMessage}`)
+    yield* Effect.logDebug(`Received init error: ${error.errorMessage}`)
     yield* Queue.offer(state.responseQueue, error)
 
     return HttpServerResponse.empty({ status: 202 })
@@ -254,7 +254,7 @@ export const startRuntimeApiServer = (): Effect.Effect<
       throw new Error("Expected TCP address")
     }
 
-    console.log(`[RuntimeAPI] Server listening on port ${address.port}`)
+    yield* Effect.logInfo(`RuntimeAPI server listening on port ${address.port}`)
 
     return {
       port: address.port,

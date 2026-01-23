@@ -27,3 +27,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system design and message flow.
 - [Code Style](.agents/code-style.md) - Imports, error handling, logging, JSDoc
 - [CDK Patterns](.agents/cdk-patterns.md) - Aspects, stacks, props interfaces
 - [Project Structure](.agents/project-structure.md) - Directory layout, config files
+- [Effect](.agents/effect.md) - Effect library best practices and references

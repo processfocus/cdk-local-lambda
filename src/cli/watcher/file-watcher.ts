@@ -51,14 +51,16 @@ export const watchFiles = (
 
       // Cleanup when scope closes
       yield* Effect.addFinalizer(() =>
-        Effect.promise(async () => {
-          await watcher.close()
-          console.log("[Watcher] File watcher closed")
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await watcher.close()
+          })
+          yield* Effect.logInfo("File watcher closed")
         }),
       )
 
-      console.log(
-        `[Watcher] Watching: ${Array.isArray(patterns) ? patterns.join(", ") : patterns}`,
+      yield* Effect.logInfo(
+        `Watching: ${Array.isArray(patterns) ? patterns.join(", ") : patterns}`,
       )
     }),
   )

@@ -127,26 +127,32 @@ export const watchDockerContexts = (
 
       watcher.on("error", (err) => {
         const error = err as Error
-        console.error(`[DockerWatcher] Error: ${error.message}`)
+        Effect.runSync(
+          Effect.logWarning(`DockerWatcher error: ${error.message}`),
+        )
         // Don't fail the stream on transient errors, just log
       })
 
       watcher.on("ready", () => {
-        console.log(
-          `[DockerWatcher] Watching ${functions.length} Docker context(s) for changes`,
+        Effect.runSync(
+          Effect.logInfo(
+            `Watching ${functions.length} Docker context(s) for changes`,
+          ),
         )
         for (const fn of functions) {
-          console.log(
-            `[DockerWatcher]   - ${fn.functionId}: ${fn.dockerContextPath}`,
+          Effect.runSync(
+            Effect.logInfo(`  - ${fn.functionId}: ${fn.dockerContextPath}`),
           )
         }
       })
 
       // Cleanup when scope closes
       yield* Effect.addFinalizer(() =>
-        Effect.promise(async () => {
-          await watcher.close()
-          console.log("[DockerWatcher] File watcher closed")
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await watcher.close()
+          })
+          yield* Effect.logInfo("DockerWatcher file watcher closed")
         }),
       )
     }),

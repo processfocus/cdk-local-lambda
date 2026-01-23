@@ -125,7 +125,7 @@ export const runDockerContainer = (
     const runtime = yield* detectDockerRuntime()
     const args = buildDockerArgs(config, runtime)
 
-    console.log(`[Docker] Running: docker ${args.join(" ")}`)
+    yield* Effect.logInfo(`Running: docker ${args.join(" ")}`)
 
     const result = yield* Effect.async<DockerRunResult, Error>((resume) => {
       const stdout: string[] = []
@@ -171,7 +171,7 @@ export const runDockerContainer = (
     })
 
     if (result.exitCode !== 0) {
-      console.log(`[Docker] Container exited with code ${result.exitCode}`)
+      yield* Effect.logWarning(`Container exited with code ${result.exitCode}`)
     }
 
     return result
@@ -192,7 +192,7 @@ export const pullDockerImage = (imageUri: string): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
     const runtime = yield* detectDockerRuntime()
 
-    console.log(`[Docker] Pulling image: ${imageUri}`)
+    yield* Effect.logInfo(`Pulling image: ${imageUri}`)
 
     yield* Effect.async<void, Error>((resume) => {
       const proc = spawn(runtime.dockerPath, ["pull", imageUri], {
@@ -222,7 +222,7 @@ export const pullDockerImage = (imageUri: string): Effect.Effect<void, Error> =>
       })
     })
 
-    console.log(`[Docker] Image pulled: ${imageUri}`)
+    yield* Effect.logInfo(`Image pulled: ${imageUri}`)
   })
 
 /**
@@ -245,8 +245,8 @@ export const buildDockerImage = (options: {
       options.contextPath,
     ]
 
-    console.log(`[Docker] Building image: ${options.imageName}`)
-    console.log(`[Docker] Context: ${options.contextPath}`)
+    yield* Effect.logInfo(`Building image: ${options.imageName}`)
+    yield* Effect.logInfo(`Context: ${options.contextPath}`)
 
     yield* Effect.async<void, Error>((resume) => {
       const proc = spawn(runtime.dockerPath, args, {
@@ -276,7 +276,7 @@ export const buildDockerImage = (options: {
       })
     })
 
-    console.log(`[Docker] Image built: ${options.imageName}`)
+    yield* Effect.logInfo(`Image built: ${options.imageName}`)
   })
 
 /**

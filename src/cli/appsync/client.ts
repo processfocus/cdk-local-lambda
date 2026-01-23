@@ -192,7 +192,7 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
         )
       }
 
-      console.log(`[AppSync] Published to ${channel}`)
+      yield* Effect.logDebug(`Published to ${channel}`)
     })
 
   /**
@@ -203,11 +203,11 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
       Effect.gen(function* () {
         const { url, subprotocols } = yield* buildSignedWebSocketConnection
 
-        console.log(`[AppSync] Connecting to ${url}`)
+        yield* Effect.logInfo(`Connecting to ${url}`)
 
         const ws = new WebSocket(url, [...subprotocols])
         ws.on("open", () => {
-          console.log("[AppSync] WebSocket connected")
+          Effect.runSync(Effect.logInfo("WebSocket connected"))
           ws.send(JSON.stringify({ type: "connection_init" }))
         })
 
@@ -215,7 +215,7 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
           const message = JSON.parse(data.toString())
 
           if (message.type === "connection_ack") {
-            console.log("[AppSync] Connection acknowledged")
+            Effect.runSync(Effect.logDebug("Connection acknowledged"))
             const auth = await Effect.runPromise(
               createSubscribeAuthorization(channel),
             )
@@ -228,16 +228,20 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
               }),
             )
           } else if (message.type === "subscribe_success") {
-            console.log(`[AppSync] Subscribed to ${channel}`)
+            Effect.runSync(Effect.logInfo(`Subscribed to ${channel}`))
           } else if (message.type === "data" && message.id === "sub-1") {
             try {
               const eventData = JSON.parse(message.event) as T
               emit.single(eventData)
             } catch (err) {
-              console.error("[AppSync] Failed to parse event data:", err)
+              Effect.runSync(
+                Effect.logError(`Failed to parse event data: ${err}`),
+              )
             }
           } else if (message.type === "error") {
-            console.error("[AppSync] WebSocket error:", message)
+            Effect.runSync(
+              Effect.logError(`WebSocket error: ${JSON.stringify(message)}`),
+            )
             emit.fail(
               new Error(
                 message.errors
@@ -249,19 +253,19 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
         })
 
         ws.on("error", (err) => {
-          console.error("[AppSync] WebSocket error:", err)
+          Effect.runSync(Effect.logError(`WebSocket error: ${err.message}`))
           emit.fail(new Error(err.message))
         })
 
         ws.on("close", () => {
-          console.log("[AppSync] WebSocket closed")
+          Effect.runSync(Effect.logInfo("WebSocket closed"))
           emit.end()
         })
 
         // Cleanup when scope closes
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            console.log("[AppSync] Closing WebSocket")
+          Effect.gen(function* () {
+            yield* Effect.logInfo("Closing WebSocket")
             ws.close()
           }),
         )
