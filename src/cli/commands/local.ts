@@ -22,11 +22,17 @@ import {
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
 import { Command, Options } from "@effect/cli"
 import {
+  type CommandExecutor,
+  Command as PlatformCommand,
+} from "@effect/platform"
+import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
+import {
   Effect,
   Exit,
   type Fiber,
   Logger,
   LogLevel,
+  Queue,
   Ref,
   Schedule,
   Scope,
@@ -981,144 +987,163 @@ const handleNodejsInvocation = (
   })
 
 /**
- * Start CDK watch process with CDK_LIVE=true.
+ * CDK watch event types.
  */
-const startCdkWatch = (options: {
-  profile?: string
-  region?: string
-  stacks?: string[]
-  all?: boolean
-  onStackDiscovered: (stackName: string) => void
-  onDeployComplete: () => void
-}): ChildProcess => {
-  const args = [
-    "cdk",
-    "watch",
-    "--hotswap-fallback",
-    "--no-logs",
-    "--method=direct",
-  ]
+type CdkWatchEvent =
+  | { readonly _tag: "StackDiscovered"; readonly stackName: string }
+  | { readonly _tag: "DeployComplete" }
 
-  if (options.stacks && options.stacks.length > 0) {
-    args.push(...options.stacks)
-  } else if (options.all) {
-    args.push("--all")
-  }
-  // Otherwise, let CDK decide (fails if multiple stacks)
+/**
+ * Start CDK watch process with CDK_LIVE=true using Effect's Command.
+ * Returns the process and a queue of events.
+ */
+const startCdkWatch = (
+  options: {
+    profile?: string
+    region?: string
+    stacks?: string[]
+    all?: boolean
+  },
+  scope: Scope.Scope,
+): Effect.Effect<
+  { process: EffectProcess; events: Queue.Queue<CdkWatchEvent> },
+  Error,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const args = [
+      "cdk",
+      "watch",
+      "--hotswap-fallback",
+      "--no-logs",
+      "--method=direct",
+    ]
 
-  if (options.profile) {
-    args.push("--profile", options.profile)
-  }
+    if (options.stacks && options.stacks.length > 0) {
+      args.push(...options.stacks)
+    } else if (options.all) {
+      args.push("--all")
+    }
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    CDK_LIVE: "true",
-  }
+    if (options.profile) {
+      args.push("--profile", options.profile)
+    }
 
-  if (options.region) {
-    env.AWS_REGION = options.region
-    env.CDK_DEFAULT_REGION = options.region
-  }
+    const env: Record<string, string> = {
+      ...process.env,
+      CDK_LIVE: "true",
+    } as Record<string, string>
 
-  Effect.runSync(Effect.logDebug(`Starting: npx ${args.join(" ")}`))
+    if (options.region) {
+      env.AWS_REGION = options.region
+      env.CDK_DEFAULT_REGION = options.region
+    }
 
-  const proc = spawn("npx", args, {
-    stdio: ["ignore", "pipe", "pipe"],
-    env,
-    shell: true,
+    yield* Effect.logDebug(`Starting: npx ${args.join(" ")}`)
+
+    const command = PlatformCommand.make("npx", ...args).pipe(
+      PlatformCommand.env(env),
+      PlatformCommand.runInShell(true),
+      PlatformCommand.stdin("inherit"),
+    )
+
+    // Extend the process resource lifetime to the provided scope
+    const proc = yield* PlatformCommand.start(command).pipe(Scope.extend(scope))
+
+    // Event queue for callers to subscribe to
+    const events = yield* Queue.unbounded<CdkWatchEvent>()
+
+    // State tracking for deploy status messages
+    let isDeploying = false
+    let isFirstDeploy = true
+    let outputBuffer = ""
+    const discoveredStacks = new Set<string>()
+
+    // Patterns to detect CDK watch behavior
+    const deployCompletePattern = /✅\s+\S+|Deployment time:/
+    const deployStartPattern = /Deploying|hotswap|Hotswapping|Bundling/i
+    const noChangesPattern = /no changes|identical|up to date/i
+    const errorPattern = /error|failed|Error|Failed|ERR!/i
+    const stackNamePattern = /^(\S+):\s*deploying|✅\s+(\S+)/
+
+    // Merge stdout and stderr, decode to text, split into lines
+    const outputStream = Stream.merge(proc.stdout, proc.stderr).pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+    )
+
+    // Fork stream processing in background
+    yield* outputStream.pipe(
+      Stream.runForEach((line) =>
+        Effect.gen(function* () {
+          outputBuffer += line + "\n"
+
+          // Log all output at debug level
+          yield* Effect.logDebug(`[CDK] ${line}`)
+
+          // Try to extract stack name
+          const match = stackNamePattern.exec(line.trim())
+          if (match) {
+            const stackName = match[1] || match[2]
+            if (stackName && !discoveredStacks.has(stackName)) {
+              discoveredStacks.add(stackName)
+              yield* Queue.offer(events, {
+                _tag: "StackDiscovered",
+                stackName,
+              })
+            }
+          }
+
+          // Detect deploy start
+          if (!isDeploying && deployStartPattern.test(line)) {
+            isDeploying = true
+            if (!isFirstDeploy) {
+              yield* Effect.logInfo("[CDK] Deploying...")
+            }
+          }
+
+          // Detect errors - output immediately
+          if (errorPattern.test(line)) {
+            yield* Effect.sync(() => process.stderr.write(line + "\n"))
+          }
+
+          // Check for deploy completion (only trigger once per deploy cycle)
+          if (isDeploying && deployCompletePattern.test(line)) {
+            isDeploying = false
+            isFirstDeploy = false
+            outputBuffer = ""
+            yield* Effect.logInfo("[CDK] Deploy complete")
+            // Small delay to ensure AWS has propagated the changes
+            yield* Effect.sleep("1 second")
+            yield* Queue.offer(events, { _tag: "DeployComplete" })
+          }
+
+          // Check for no changes
+          if (noChangesPattern.test(line)) {
+            isDeploying = false
+            outputBuffer = ""
+          }
+        }),
+      ),
+      // Log errors and exit code when stream ends
+      Effect.tapError((error) =>
+        Effect.logError(`[CDK] CDK watch error: ${error}`),
+      ),
+      Effect.ensuring(
+        proc.exitCode.pipe(
+          Effect.flatMap((code) =>
+            code !== 0
+              ? Effect.logError(`[CDK] CDK watch exited with code ${code}`)
+              : Effect.logDebug(`[CDK] CDK watch exited with code ${code}`),
+          ),
+          Effect.catchAll(() => Effect.void),
+        ),
+      ),
+      Effect.fork,
+    )
+
+    return { process: proc, events }
   })
-
-  // State tracking for deploy status messages
-  let isDeploying = false
-  let isFirstDeploy = true // First deploy message is shown at startup
-  let outputBuffer = ""
-  const discoveredStacks = new Set<string>()
-
-  // Patterns to detect CDK watch behavior
-  const deployCompletePattern = /✅\s+\S+|Deployment time:/
-  const deployStartPattern = /Deploying|hotswap|Hotswapping|Bundling/i
-  const noChangesPattern = /no changes|identical|up to date/i
-  const errorPattern = /error|failed|Error|Failed|ERR!/i
-  // Pattern to extract stack name: "StackName: deploying..." or "✅  StackName"
-  const stackNamePattern = /^(\S+):\s*deploying|✅\s+(\S+)/
-
-  const processOutput = (data: Buffer, isStderr: boolean) => {
-    const text = data.toString()
-    outputBuffer += text
-
-    // Log all output at debug level
-    Effect.runSync(Effect.logDebug(`[CDK] ${text.trim()}`))
-
-    // Try to extract stack name from output
-    for (const line of text.split("\n")) {
-      const match = stackNamePattern.exec(line.trim())
-      if (match) {
-        const stackName = match[1] || match[2]
-        if (stackName && !discoveredStacks.has(stackName)) {
-          discoveredStacks.add(stackName)
-          options.onStackDiscovered(stackName)
-        }
-      }
-    }
-
-    // Detect deploy start
-    if (!isDeploying && deployStartPattern.test(text)) {
-      isDeploying = true
-      // Show message for subsequent deploys (first deploy message shown at startup)
-      if (!isFirstDeploy) {
-        Effect.runSync(Effect.logInfo("[CDK] Deploying..."))
-      }
-    }
-
-    // Detect errors - output immediately
-    if (isStderr && errorPattern.test(text)) {
-      process.stderr.write(text)
-    }
-
-    // Check for deploy completion markers
-    if (deployCompletePattern.test(text)) {
-      isDeploying = false
-      isFirstDeploy = false
-      outputBuffer = ""
-      Effect.runSync(Effect.logInfo("[CDK] Deploy complete"))
-      // Small delay to ensure AWS has propagated the changes
-      setTimeout(() => options.onDeployComplete(), 1000)
-    }
-
-    // Check for no changes
-    if (noChangesPattern.test(text)) {
-      isDeploying = false
-      outputBuffer = ""
-    }
-  }
-
-  proc.stdout?.on("data", (data: Buffer) => processOutput(data, false))
-  proc.stderr?.on("data", (data: Buffer) => processOutput(data, true))
-
-  proc.on("error", (err) => {
-    Effect.runSync(Effect.logError(`[CDK] CDK watch error: ${err.message}`))
-    if (outputBuffer) {
-      process.stderr.write(outputBuffer)
-    }
-  })
-
-  proc.on("close", (code) => {
-    if (code !== 0 && code !== null) {
-      Effect.runSync(
-        Effect.logError(`[CDK] CDK watch exited with code ${code}`),
-      )
-      if (outputBuffer) {
-        process.stderr.write(outputBuffer)
-      }
-    } else {
-      Effect.runSync(
-        Effect.logDebug(`[CDK] CDK watch exited with code ${code}`),
-      )
-    }
-  })
-
-  return proc
-}
 
 /**
  * Common CLI options.
@@ -1198,42 +1223,24 @@ export const localCommand = Command.make(
       // Using object so closure in startOrUpdateDaemon sees updates
       const filterState = { stacks: stacksFromOption ?? ([] as string[]) }
 
-      // Start CDK watch with deploy completion callback (defined later)
-      let cdkWatchProc: ChildProcess | null = null
-
-      const onStackDiscovered = (stackName: string) => {
-        // Add discovered stack to filter (if not using --stacks)
-        if (!stacksFromOption && !filterState.stacks.includes(stackName)) {
-          filterState.stacks.push(stackName)
-          Effect.runSync(
-            Effect.logDebug(`[Local] Discovered stack: ${stackName}`),
-          )
-        }
-      }
-
-      const onDeployComplete = () => {
-        Effect.runPromise(
-          startOrUpdateDaemon.pipe(
-            Effect.catchAll((error) =>
-              Effect.logError(`Failed to update daemon: ${error}`),
-            ),
-            Effect.provide(Logger.pretty),
-            Effect.provide(Logger.minimumLogLevel(logLevel)),
-          ),
-        )
-      }
+      // Create a long-lived scope for all Runtime API servers and CDK watch process
+      // Resources will run until this scope is closed (when the program ends)
+      const serverScope = yield* Scope.make()
 
       // Start CDK watch immediately after bootstrap
       // Stack names are discovered from CDK watch output (no need for separate cdk ls)
       yield* Effect.logInfo("[CDK] Deploying...")
-      cdkWatchProc = startCdkWatch({
-        profile: profileValue,
-        region: regionValue,
-        stacks: stacksFromOption,
-        all,
-        onStackDiscovered,
-        onDeployComplete,
-      })
+
+      const { process: cdkWatchProcess, events: cdkEvents } =
+        yield* startCdkWatch(
+          {
+            profile: profileValue,
+            region: regionValue,
+            stacks: stacksFromOption,
+            all,
+          },
+          serverScope,
+        )
 
       // Track running Docker containers by function name
       const containers = yield* Ref.make<Map<string, FunctionContainer>>(
@@ -1258,10 +1265,6 @@ export const localCommand = Command.make(
 
       // Track if we've logged the "Watching" message (only log once)
       const logState = { hasLoggedWatching: false }
-
-      // Create a long-lived scope for all Runtime API servers
-      // Servers will run until this scope is closed (when the program ends)
-      const serverScope = yield* Scope.make()
 
       // Function to start/update the daemon with discovered functions
       const startOrUpdateDaemon = Effect.gen(function* () {
@@ -1458,48 +1461,77 @@ export const localCommand = Command.make(
         }
       })
 
-      // Daemon will start when CDK watch completes first deploy (via onDeployComplete)
-      // This ensures we have discovered the stack name from CDK output first
+      // Handle CDK watch events (stack discovery and deploy completion)
+      yield* Queue.take(cdkEvents).pipe(
+        Effect.flatMap((event) =>
+          Effect.gen(function* () {
+            switch (event._tag) {
+              case "StackDiscovered":
+                // Add discovered stack to filter (if not using --stacks)
+                if (
+                  !stacksFromOption &&
+                  !filterState.stacks.includes(event.stackName)
+                ) {
+                  filterState.stacks.push(event.stackName)
+                  yield* Effect.logDebug(
+                    `[Local] Discovered stack: ${event.stackName}`,
+                  )
+                }
+                break
+              case "DeployComplete":
+                // Run daemon update on deploy completion
+                yield* startOrUpdateDaemon.pipe(
+                  Effect.catchAll((error) =>
+                    Effect.logError(`Failed to update daemon: ${error}`),
+                  ),
+                )
+                break
+            }
+          }),
+        ),
+        Effect.forever,
+        Effect.fork,
+      )
 
       // Handle cleanup on exit
       const cleanup = async () => {
-        Effect.runSync(Effect.logInfo("\nShutting down..."))
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            yield* Effect.logInfo("\nShutting down...")
 
-        // Stop CDK watch
-        if (cdkWatchProc) {
-          cdkWatchProc.kill("SIGTERM")
-        }
+            // Stop CDK watch
+            yield* cdkWatchProcess
+              .kill("SIGTERM")
+              .pipe(Effect.catchAll(() => Effect.void))
 
-        // Stop all Docker containers
-        // Note: Runtime API servers are managed by Effect scope and will be
-        // cleaned up when the scope closes (process exit)
-        const currentContainers = await Effect.runPromise(Ref.get(containers))
-        for (const [name, container] of currentContainers) {
-          Effect.runSync(Effect.logInfo(`Stopping container: ${name}`))
-          // Stop the Docker container (find by name prefix)
-          try {
-            execSync(
-              `docker ps -q --filter "name=${container.containerName}" | xargs -r docker stop`,
-              { stdio: "ignore" },
-            )
-          } catch {
-            // Ignore errors - container may already be stopped
-          }
-        }
+            // Stop all Docker containers
+            const currentContainers = yield* Ref.get(containers)
+            for (const [name, container] of currentContainers) {
+              yield* Effect.logInfo(`Stopping container: ${name}`)
+              yield* Effect.try(() =>
+                execSync(
+                  `docker ps -q --filter "name=${container.containerName}" | xargs -r docker stop`,
+                  { stdio: "ignore" },
+                ),
+              ).pipe(Effect.catchAll(() => Effect.void))
+            }
 
-        // Stop all Node.js workers
-        const currentWorkers = await Effect.runPromise(Ref.get(workers))
-        for (const [name, worker] of currentWorkers) {
-          Effect.runSync(Effect.logInfo(`Stopping worker: ${name}`))
-          try {
-            worker.workerProcess.kill("SIGTERM")
-          } catch {
-            // Ignore errors - worker may already be stopped
-          }
-        }
+            // Stop all Node.js workers
+            const currentWorkers = yield* Ref.get(workers)
+            for (const [name, worker] of currentWorkers) {
+              yield* Effect.logInfo(`Stopping worker: ${name}`)
+              yield* Effect.try(() =>
+                worker.workerProcess.kill("SIGTERM"),
+              ).pipe(Effect.catchAll(() => Effect.void))
+            }
 
-        // Close the server scope to clean up Runtime API servers
-        await Effect.runPromise(Scope.close(serverScope, Exit.void))
+            // Close the server scope to clean up Runtime API servers
+            yield* Scope.close(serverScope, Exit.void)
+          }).pipe(
+            Effect.provide(Logger.pretty),
+            Effect.provide(Logger.minimumLogLevel(logLevel)),
+          ),
+        )
 
         process.exit(0)
       }
