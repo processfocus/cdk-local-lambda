@@ -217,7 +217,7 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
       Effect.gen(function* () {
         const args = buildDockerRunArgs(config, runtime)
 
-        yield* Effect.logInfo(`Running: docker ${args.join(" ")}`)
+        yield* Effect.logDebug(`Running: docker ${args.join(" ")}`)
 
         const command = PlatformCommand.make(runtime.dockerPath, ...args)
 
@@ -320,33 +320,25 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
         ]
 
         yield* Effect.logInfo(`Building image: ${options.imageName}`)
-        yield* Effect.logInfo(`Context: ${options.contextPath}`)
+        yield* Effect.logDebug(`Context: ${options.contextPath}`)
 
         const command = PlatformCommand.make(runtime.dockerPath, ...args)
 
         const proc = yield* PlatformCommand.start(command)
 
-        // Process stdout
+        // Process stdout (debug only)
         const stdoutFiber = yield* proc.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
-            Effect.sync(() => {
-              process.stdout.write(`[Docker] ${line}\n`)
-            }),
-          ),
+          Stream.runForEach((line) => Effect.logDebug(`[Docker] ${line}`)),
           Effect.fork,
         )
 
-        // Process stderr
+        // Process stderr (debug only)
         const stderrFiber = yield* proc.stderr.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
-            Effect.sync(() => {
-              process.stderr.write(`[Docker] ${line}\n`)
-            }),
-          ),
+          Stream.runForEach((line) => Effect.logDebug(`[Docker] ${line}`)),
           Effect.fork,
         )
 
@@ -364,7 +356,7 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
           )
         }
 
-        yield* Effect.logInfo(`Image built: ${options.imageName}`)
+        yield* Effect.logInfo(`Built image: ${options.imageName}`)
       })
 
     const pull: DockerService["pull"] = (imageUri) =>
@@ -379,27 +371,19 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
 
         const proc = yield* PlatformCommand.start(command)
 
-        // Process stdout
+        // Process stdout (debug only)
         const stdoutFiber = yield* proc.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
-            Effect.sync(() => {
-              process.stdout.write(`[Docker] ${line}\n`)
-            }),
-          ),
+          Stream.runForEach((line) => Effect.logDebug(`[Docker] ${line}`)),
           Effect.fork,
         )
 
-        // Process stderr
+        // Process stderr (debug only)
         const stderrFiber = yield* proc.stderr.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
-            Effect.sync(() => {
-              process.stderr.write(`[Docker] ${line}\n`)
-            }),
-          ),
+          Stream.runForEach((line) => Effect.logDebug(`[Docker] ${line}`)),
           Effect.fork,
         )
 
@@ -417,7 +401,7 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
           )
         }
 
-        yield* Effect.logInfo(`Image pulled: ${imageUri}`)
+        yield* Effect.logInfo(`Pulled image: ${imageUri}`)
       })
 
     const list: DockerService["list"] = (containerNameFilter) =>

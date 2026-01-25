@@ -254,7 +254,9 @@ export const startRuntimeApiServer = (): Effect.Effect<
       throw new Error("Expected TCP address")
     }
 
-    yield* Effect.logInfo(`RuntimeAPI server listening on port ${address.port}`)
+    yield* Effect.logDebug(
+      `RuntimeAPI server listening on port ${address.port}`,
+    )
 
     return {
       port: address.port,

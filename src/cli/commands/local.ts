@@ -927,11 +927,11 @@ const handleDockerInvocation = (
 
     // Log if queuing during a rebuild
     if (container.isRebuilding) {
-      yield* Effect.logInfo(
+      yield* Effect.logDebug(
         `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName} (rebuild in progress, will be picked up by new container)`,
       )
     } else {
-      yield* Effect.logInfo(
+      yield* Effect.logDebug(
         `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
       )
     }
@@ -948,7 +948,7 @@ const handleDockerInvocation = (
       logStreamName: invocation.context.logStreamName,
     }
 
-    yield* Effect.logInfo(
+    yield* Effect.logDebug(
       `[Local] Queueing to Runtime API on port ${container.port}`,
     )
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
@@ -981,7 +981,7 @@ const handleNodejsInvocation = (
       appSyncClient,
     )
 
-    yield* Effect.logInfo(
+    yield* Effect.logDebug(
       `[Local] Queueing invocation ${invocation.requestId} for ${fn.functionName}`,
     )
 
@@ -1282,6 +1282,8 @@ export const localCommand = Command.make(
 
       // Function to start/update the daemon with discovered functions
       const startOrUpdateDaemon = Effect.gen(function* () {
+        yield* Effect.logInfo("[Local] Discovering functions...")
+
         // Get AppSync endpoints (may need to wait for first deploy)
         if (!appSyncClient) {
           yield* Effect.logDebug(
@@ -1468,7 +1470,7 @@ export const localCommand = Command.make(
 
         if (!logState.hasLoggedWatching) {
           logState.hasLoggedWatching = true
-          yield* Effect.logInfo("[Local] Watching for invocations...")
+          yield* Effect.logInfo("[Local] Ready for invocations")
         }
       })
 
@@ -1555,7 +1557,10 @@ export const localCommand = Command.make(
 
       // Keep the process running
       yield* Effect.never
-    }).pipe(Effect.provide(Logger.minimumLogLevel(logLevel)))
+    }).pipe(
+      Effect.provide(Logger.pretty),
+      Effect.provide(Logger.minimumLogLevel(logLevel)),
+    )
   },
 ).pipe(
   Command.withDescription(
