@@ -11,7 +11,7 @@
  * 7. Re-discovers functions after each CDK deploy
  */
 
-import { type ChildProcess, execSync, spawn } from "node:child_process"
+import { type ChildProcess, spawn } from "node:child_process"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -26,6 +26,7 @@ import {
   Command as PlatformCommand,
 } from "@effect/platform"
 import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
+import { BunContext } from "@effect/platform-bun"
 import {
   Effect,
   Exit,
@@ -50,10 +51,9 @@ import {
 } from "../../shared/types.js"
 import { makeAppSyncClient } from "../appsync/client.js"
 import {
-  buildDockerImage,
-  detectDockerRuntime,
+  Docker,
+  DockerLive,
   makeLambdaContainerConfig,
-  runDockerContainer,
 } from "../docker/container.js"
 import {
   type WatchedDockerFunction,
@@ -169,43 +169,57 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
     const cdkAppPath = path.resolve(__dirname, "..", "cdk-app.js")
 
     const args = [
-      "npx",
       "cdk",
       "deploy",
       BOOTSTRAP_STACK_NAME,
       "--require-approval",
       "never",
       "--app",
-      `"bun ${cdkAppPath}"`,
+      `bun ${cdkAppPath}`,
     ]
 
     if (options.profile) {
       args.push("--profile", options.profile)
     }
 
-    const env: NodeJS.ProcessEnv = { ...process.env }
+    const env: Record<string, string> = {
+      ...process.env,
+    } as Record<string, string>
     if (options.region) {
       env.AWS_REGION = options.region
       env.CDK_DEFAULT_REGION = options.region
     }
 
-    const command = args.join(" ")
-    yield* Effect.logInfo(`Running: ${command}`)
+    yield* Effect.logInfo(`Running: npx ${args.join(" ")}`)
 
-    yield* Effect.try({
-      try: () => {
-        execSync(command, { stdio: "inherit", env, shell: "/bin/bash" })
-      },
-      catch: (error) => {
-        if (error instanceof Error) {
-          return new Error(`Bootstrap deployment failed: ${error.message}`)
-        }
-        return new Error("Bootstrap deployment failed with unknown error")
-      },
-    })
+    const command = PlatformCommand.make("npx", ...args).pipe(
+      PlatformCommand.env(env),
+      PlatformCommand.stdin("inherit"),
+      PlatformCommand.runInShell(true),
+    )
+
+    const proc = yield* PlatformCommand.start(command)
+
+    // Stream output to console
+    yield* Stream.merge(proc.stdout, proc.stderr).pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.runForEach((line) =>
+        Effect.sync(() => {
+          process.stdout.write(`${line}\n`)
+        }),
+      ),
+    )
+
+    const exitCode = yield* proc.exitCode
+    if (exitCode !== 0) {
+      return yield* Effect.fail(
+        new Error(`Bootstrap deployment failed with exit code ${exitCode}`),
+      )
+    }
 
     yield* Effect.logInfo("Bootstrap stack deployed successfully!")
-  })
+  }).pipe(Effect.scoped)
 
 /**
  * Ensure bootstrap stack is deployed with correct version.
@@ -335,13 +349,17 @@ const discoverFunctions = (stackFilter?: string[]) =>
  * Start a long-running Docker container for a function.
  * Builds the image from the local Docker context path, then runs it.
  * The container continuously polls our Runtime API for invocations.
- * Uses Effect.runFork to ensure the container runs independently.
+ * Uses Effect.forkDaemon to ensure the container runs independently with context.
  */
 const startFunctionContainer = (
   fn: DiscoveredFunction,
   port: number,
   projectRoot: string,
-): Effect.Effect<Fiber.RuntimeFiber<void, Error>, Error> =>
+): Effect.Effect<
+  Fiber.RuntimeFiber<void, Error>,
+  Error,
+  CommandExecutor.CommandExecutor
+> =>
   Effect.gen(function* () {
     if (!fn.dockerContextPath) {
       return yield* Effect.fail(
@@ -349,7 +367,9 @@ const startFunctionContainer = (
       )
     }
 
-    const dockerRuntime = yield* detectDockerRuntime()
+    const docker = yield* Docker
+
+    const dockerRuntime = yield* docker.getRuntimeInfo()
     const runtimeApiHost = dockerRuntime.isDockerDesktop
       ? "host.docker.internal"
       : "runtime.api"
@@ -366,11 +386,13 @@ const startFunctionContainer = (
     const platform = fn.architecture === "arm64" ? "linux/arm64" : "linux/amd64"
 
     // Build the Docker image from local context
-    yield* buildDockerImage({
-      contextPath,
-      imageName,
-      platform,
-    })
+    yield* docker
+      .build({
+        contextPath,
+        imageName,
+        platform,
+      })
+      .pipe(Effect.scoped)
 
     const containerConfig = makeLambdaContainerConfig({
       imageUri: imageName,
@@ -387,15 +409,16 @@ const startFunctionContainer = (
       `Starting container for ${fn.functionName} on port ${port}`,
     )
 
-    // Use Effect.runFork to run the container completely independently
-    const fiber = Effect.runFork(
-      runDockerContainer(containerConfig).pipe(
-        Effect.map(() => undefined as void),
-      ),
+    // Use Effect.forkDaemon to run the container independently with context preserved
+    // Effect.scoped provides the scope needed by docker.run
+    const fiber = yield* docker.run(containerConfig).pipe(
+      Effect.scoped,
+      Effect.map(() => undefined as void),
+      Effect.forkDaemon,
     )
 
     return fiber
-  })
+  }).pipe(Effect.provide(DockerLive))
 
 // Type guards for response types
 const isLambdaResponse = (
@@ -688,7 +711,7 @@ const ensureContainerStarted = (
   serverScope: Scope.Scope,
   projectRoot: string,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
-): Effect.Effect<FunctionContainer, Error> =>
+): Effect.Effect<FunctionContainer, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     // Check if container already exists
     const currentContainers = yield* Ref.get(containersRef)
@@ -751,8 +774,10 @@ const ensureContainerStarted = (
     // Update container with the fiber
     container.containerFiber = containerFiber
 
-    // Start processing responses in the background
-    Effect.runFork(processContainerResponses(container, appSyncClient))
+    // Start processing responses in the background using forkDaemon
+    yield* processContainerResponses(container, appSyncClient).pipe(
+      Effect.forkDaemon,
+    )
 
     return container
   })
@@ -765,7 +790,7 @@ const rebuildDockerContainer = (
   functionId: string,
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
   projectRoot: string,
-): Effect.Effect<void, Error> =>
+): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     const containers = yield* Ref.get(containersRef)
     const container = containers.get(functionId)
@@ -782,38 +807,24 @@ const rebuildDockerContainer = (
 
     yield* Effect.logDebug(`[Local] Rebuilding container for ${functionId}...`)
 
-    // Stop the existing container
+    const docker = yield* Docker
+
+    // Stop the existing container using Docker service
     const containerId = container.containerName
     yield* Effect.logInfo(
       `[Local] Stopping container with name prefix: ${containerId}`,
     )
 
-    const stopResult = yield* Effect.gen(function* () {
-      // First list matching containers
-      const containersOutput = execSync(
-        `docker ps -q --filter "name=${containerId}"`,
-        { encoding: "utf-8" },
-      ).trim()
-
-      if (containersOutput) {
-        yield* Effect.logInfo(
-          `Found containers to stop: ${containersOutput.replace(/\n/g, ", ")}`,
-        )
-        execSync(`docker stop ${containersOutput.replace(/\n/g, " ")}`, {
-          stdio: "inherit",
-        })
-        return "stopped"
-      }
-      return "none"
-    }).pipe(
+    const stopCount = yield* docker.stop(containerId).pipe(
+      Effect.scoped,
       Effect.catchAll((error) =>
         Effect.gen(function* () {
           yield* Effect.logInfo(`Note: Container stop had issue: ${error}`)
-          return "error"
+          return 0
         }),
       ),
     )
-    yield* Effect.logDebug(`[Local] Container stop result: ${stopResult}`)
+    yield* Effect.logDebug(`[Local] Stopped ${stopCount} container(s)`)
 
     // Resolve the context path
     const fn = container.fn
@@ -825,16 +836,18 @@ const rebuildDockerContainer = (
     const platform = fn.architecture === "arm64" ? "linux/arm64" : "linux/amd64"
 
     // Rebuild the Docker image
-    yield* buildDockerImage({
-      contextPath,
-      imageName: container.imageName,
-      platform,
-    })
+    yield* docker
+      .build({
+        contextPath,
+        imageName: container.imageName,
+        platform,
+      })
+      .pipe(Effect.scoped)
 
     // Restart the container by triggering container startup
     // The existing fiber will have exited when we stopped the container
     // We need to start a new one
-    const dockerRuntime = yield* detectDockerRuntime()
+    const dockerRuntime = yield* docker.getRuntimeInfo()
     const runtimeApiHost = dockerRuntime.isDockerDesktop
       ? "host.docker.internal"
       : "runtime.api"
@@ -859,23 +872,24 @@ const rebuildDockerContainer = (
       `[Local] Starting new container for ${functionId}...`,
     )
 
-    const newFiber = Effect.runFork(
-      runDockerContainer(containerConfig).pipe(
-        Effect.tap((result) =>
-          Effect.gen(function* () {
-            if (result.exitCode !== 0) {
-              yield* Effect.logError(
-                `Container for ${functionId} exited with code ${result.exitCode}`,
-              )
-              yield* Effect.logError(`stderr: ${result.stderr}`)
-            }
-          }),
-        ),
-        Effect.map(() => undefined as void),
-        Effect.catchAll((error) =>
-          Effect.logError(`Container error for ${functionId}: ${error}`),
-        ),
+    // Use Effect.forkDaemon to run the container independently
+    const newFiber = yield* docker.run(containerConfig).pipe(
+      Effect.scoped,
+      Effect.tap((result) =>
+        Effect.gen(function* () {
+          if (result.exitCode !== 0) {
+            yield* Effect.logError(
+              `Container for ${functionId} exited with code ${result.exitCode}`,
+            )
+            yield* Effect.logError(`stderr: ${result.stderr}`)
+          }
+        }),
       ),
+      Effect.map(() => undefined as void),
+      Effect.catchAll((error) =>
+        Effect.logError(`Container error for ${functionId}: ${error}`),
+      ),
+      Effect.forkDaemon,
     )
 
     // Update the container state with the new fiber
@@ -886,7 +900,7 @@ const rebuildDockerContainer = (
 
     container.isRebuilding = false
     yield* Effect.logDebug(`[Local] Container rebuilt for ${functionId}`)
-  })
+  }).pipe(Effect.provide(DockerLive))
 
 /**
  * Handle incoming invocations for a Docker container function by queueing them.
@@ -900,7 +914,7 @@ const handleDockerInvocation = (
   serverScope: Scope.Scope,
   projectRoot: string,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
-): Effect.Effect<void, Error> =>
+): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     // Ensure container is started (lazy startup on first invocation)
     const container = yield* ensureContainerStarted(
@@ -1351,54 +1365,52 @@ export const localCommand = Command.make(
             `[Local] Subscribing to invocations for ${fn.functionName}`,
           )
 
-          // Subscribe using runFork to run independently
+          // Subscribe using forkDaemon to run independently with context preserved
           // Route to Docker or Node.js handler based on function type
           if (isDocker) {
-            Effect.runFork(
-              appSyncClient!
-                .subscribeToInvocations(invocationChannel)
-                .pipe(
-                  Stream.runForEach((invocation) =>
-                    handleDockerInvocation(
-                      fn,
-                      invocation,
-                      containers,
-                      serverScope,
-                      projectRoot,
-                      appSyncClient!,
-                    ).pipe(
-                      Effect.catchAll((error) =>
-                        Effect.logError(
-                          `[Local] Docker invocation error: ${error}`,
-                        ),
+            yield* appSyncClient!
+              .subscribeToInvocations(invocationChannel)
+              .pipe(
+                Stream.runForEach((invocation) =>
+                  handleDockerInvocation(
+                    fn,
+                    invocation,
+                    containers,
+                    serverScope,
+                    projectRoot,
+                    appSyncClient!,
+                  ).pipe(
+                    Effect.catchAll((error) =>
+                      Effect.logError(
+                        `[Local] Docker invocation error: ${error}`,
                       ),
                     ),
                   ),
                 ),
-            )
+                Effect.forkDaemon,
+              )
           } else {
-            Effect.runFork(
-              appSyncClient!
-                .subscribeToInvocations(invocationChannel)
-                .pipe(
-                  Stream.runForEach((invocation) =>
-                    handleNodejsInvocation(
-                      fn,
-                      invocation,
-                      workers,
-                      serverScope,
-                      projectRoot,
-                      appSyncClient!,
-                    ).pipe(
-                      Effect.catchAll((error) =>
-                        Effect.logError(
-                          `[Local] Node.js invocation error: ${error}`,
-                        ),
+            yield* appSyncClient!
+              .subscribeToInvocations(invocationChannel)
+              .pipe(
+                Stream.runForEach((invocation) =>
+                  handleNodejsInvocation(
+                    fn,
+                    invocation,
+                    workers,
+                    serverScope,
+                    projectRoot,
+                    appSyncClient!,
+                  ).pipe(
+                    Effect.catchAll((error) =>
+                      Effect.logError(
+                        `[Local] Node.js invocation error: ${error}`,
                       ),
                     ),
                   ),
                 ),
-            )
+                Effect.forkDaemon,
+              )
           }
         }
 
@@ -1430,28 +1442,27 @@ export const localCommand = Command.make(
             `[Local] Starting file watchers for ${newDockerFunctions.length} Docker function(s)...`,
           )
 
-          // Fork a fiber to handle file change events
-          Effect.runFork(
-            watchDockerContexts(newDockerFunctions, 500).pipe(
-              Stream.runForEach((event) =>
-                Effect.gen(function* () {
-                  yield* Effect.logDebug(
-                    `[Local] File changed in ${event.functionId}: ${event.filePath}`,
-                  )
-                  yield* rebuildDockerContainer(
-                    event.functionId,
-                    containers,
-                    projectRoot,
-                  ).pipe(
-                    Effect.catchAll((error) =>
-                      Effect.logError(
-                        `[Local] Rebuild failed for ${event.functionId}: ${error}`,
-                      ),
+          // Fork a daemon fiber to handle file change events with context preserved
+          yield* watchDockerContexts(newDockerFunctions, 500).pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                yield* Effect.logDebug(
+                  `[Local] File changed in ${event.functionId}: ${event.filePath}`,
+                )
+                yield* rebuildDockerContainer(
+                  event.functionId,
+                  containers,
+                  projectRoot,
+                ).pipe(
+                  Effect.catchAll((error) =>
+                    Effect.logError(
+                      `[Local] Rebuild failed for ${event.functionId}: ${error}`,
                     ),
-                  )
-                }),
-              ),
+                  ),
+                )
+              }),
             ),
+            Effect.forkDaemon,
           )
         }
 
@@ -1504,16 +1515,15 @@ export const localCommand = Command.make(
               .kill("SIGTERM")
               .pipe(Effect.catchAll(() => Effect.void))
 
-            // Stop all Docker containers
+            // Stop all Docker containers using the Docker service
+            const docker = yield* Docker
             const currentContainers = yield* Ref.get(containers)
             for (const [name, container] of currentContainers) {
               yield* Effect.logInfo(`Stopping container: ${name}`)
-              yield* Effect.try(() =>
-                execSync(
-                  `docker ps -q --filter "name=${container.containerName}" | xargs -r docker stop`,
-                  { stdio: "ignore" },
-                ),
-              ).pipe(Effect.catchAll(() => Effect.void))
+              yield* docker.stop(container.containerName).pipe(
+                Effect.scoped,
+                Effect.catchAll(() => Effect.void),
+              )
             }
 
             // Stop all Node.js workers
@@ -1528,6 +1538,8 @@ export const localCommand = Command.make(
             // Close the server scope to clean up Runtime API servers
             yield* Scope.close(serverScope, Exit.void)
           }).pipe(
+            Effect.provide(DockerLive),
+            Effect.provide(BunContext.layer),
             Effect.provide(Logger.pretty),
             Effect.provide(Logger.minimumLogLevel(logLevel)),
           ),

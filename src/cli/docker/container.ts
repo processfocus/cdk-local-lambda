@@ -2,12 +2,17 @@
  * Docker container management utilities.
  *
  * Handles running Docker containers with the Lambda Runtime API
- * environment configured.
+ * environment configured. Uses @effect/platform Command for
+ * proper Effect-based process management.
  */
 
-import { spawn } from "node:child_process"
 import * as os from "node:os"
-import { Effect, type Fiber, Queue } from "effect"
+import {
+  type CommandExecutor,
+  Command as PlatformCommand,
+} from "@effect/platform"
+import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
+import { Context, Effect, Layer, type Scope, Stream } from "effect"
 import type {
   DockerRunConfig,
   DockerRunResult,
@@ -53,7 +58,7 @@ export const detectDockerRuntime = (): Effect.Effect<
 /**
  * Build Docker run arguments from config.
  */
-const buildDockerArgs = (
+const buildDockerRunArgs = (
   config: DockerRunConfig,
   runtime: DockerRuntimeInfo,
 ): string[] => {
@@ -116,168 +121,407 @@ const buildDockerArgs = (
 }
 
 /**
- * Run a Docker container and wait for it to complete.
+ * Docker Service interface for Effect-based Docker operations.
+ * All scoped operations require both Scope and CommandExecutor.
  */
-export const runDockerContainer = (
-  config: DockerRunConfig,
-): Effect.Effect<DockerRunResult, Error> =>
-  Effect.gen(function* () {
+export interface DockerService {
+  /**
+   * Run a Docker container and wait for it to complete.
+   * Output is streamed to stdout/stderr.
+   */
+  readonly run: (
+    config: DockerRunConfig,
+  ) => Effect.Effect<
+    DockerRunResult,
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
+
+  /**
+   * Run a Docker container with scoped lifecycle management.
+   * Returns the running process which can be interrupted via scope.
+   */
+  readonly runScoped: (
+    config: DockerRunConfig,
+  ) => Effect.Effect<
+    EffectProcess,
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
+
+  /**
+   * Build a Docker image from a local context directory.
+   */
+  readonly build: (options: {
+    contextPath: string
+    imageName: string
+    platform?: string
+  }) => Effect.Effect<
+    void,
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
+
+  /**
+   * Pull a Docker image if not already present.
+   */
+  readonly pull: (
+    imageUri: string,
+  ) => Effect.Effect<void, Error, Scope.Scope | CommandExecutor.CommandExecutor>
+
+  /**
+   * Stop Docker containers matching a name filter.
+   * Returns the number of containers stopped.
+   */
+  readonly stop: (
+    containerNameFilter: string,
+  ) => Effect.Effect<
+    number,
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
+
+  /**
+   * List Docker container IDs matching a name filter.
+   */
+  readonly list: (
+    containerNameFilter: string,
+  ) => Effect.Effect<
+    string[],
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
+
+  /**
+   * Get the detected Docker runtime info.
+   */
+  readonly getRuntimeInfo: () => Effect.Effect<DockerRuntimeInfo, Error>
+}
+
+/**
+ * Docker Service tag for dependency injection.
+ */
+export class Docker extends Context.Tag("Docker")<Docker, DockerService>() {}
+
+/**
+ * Create the live Docker service implementation.
+ */
+const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
+  function* () {
     const runtime = yield* detectDockerRuntime()
-    const args = buildDockerArgs(config, runtime)
 
-    yield* Effect.logInfo(`Running: docker ${args.join(" ")}`)
+    const getRuntimeInfo: DockerService["getRuntimeInfo"] = () =>
+      Effect.succeed(runtime)
 
-    const result = yield* Effect.async<DockerRunResult, Error>((resume) => {
-      const stdout: string[] = []
-      const stderr: string[] = []
+    const run: DockerService["run"] = (config) =>
+      Effect.gen(function* () {
+        const args = buildDockerRunArgs(config, runtime)
 
-      const proc = spawn(runtime.dockerPath, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-      })
+        yield* Effect.logInfo(`Running: docker ${args.join(" ")}`)
 
-      proc.stdout.on("data", (data: Buffer) => {
-        const text = data.toString()
-        stdout.push(text)
-        process.stdout.write(`[Container] ${text}`)
-      })
+        const command = PlatformCommand.make(runtime.dockerPath, ...args)
 
-      proc.stderr.on("data", (data: Buffer) => {
-        const text = data.toString()
-        stderr.push(text)
-        process.stderr.write(`[Container] ${text}`)
-      })
+        const stdout: string[] = []
+        const stderr: string[] = []
 
-      proc.on("error", (err) => {
-        resume(Effect.fail(new Error(`Docker process error: ${err.message}`)))
-      })
+        // Run the command and collect output
+        const proc = yield* PlatformCommand.start(command)
 
-      proc.on("close", (exitCode) => {
-        resume(
-          Effect.succeed({
-            exitCode: exitCode ?? 1,
-            stdout: stdout.join(""),
-            stderr: stderr.join(""),
-          }),
+        // Process stdout
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              stdout.push(line)
+              process.stdout.write(`[Container] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
         )
-      })
 
-      // Set up timeout
-      const timeoutId = setTimeout(() => {
-        proc.kill("SIGTERM")
-        setTimeout(() => proc.kill("SIGKILL"), 5000)
-      }, config.timeoutSeconds * 1000)
+        // Process stderr
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              stderr.push(line)
+              process.stderr.write(`[Container] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
 
-      proc.on("close", () => clearTimeout(timeoutId))
-    })
+        // Wait for both streams and exit code
+        yield* Effect.all([
+          Effect.fromFiber(stdoutFiber),
+          Effect.fromFiber(stderrFiber),
+        ])
 
-    if (result.exitCode !== 0) {
-      yield* Effect.logWarning(`Container exited with code ${result.exitCode}`)
-    }
+        const exitCode = yield* proc.exitCode
 
-    return result
-  })
+        if (exitCode !== 0) {
+          yield* Effect.logWarning(`Container exited with code ${exitCode}`)
+        }
 
-/**
- * Run a Docker container in the background and return a fiber that can be interrupted.
- */
-export const runDockerContainerFiber = (
-  config: DockerRunConfig,
-): Effect.Effect<Fiber.RuntimeFiber<DockerRunResult, Error>> =>
-  runDockerContainer(config).pipe(Effect.fork)
-
-/**
- * Pull a Docker image if not already present.
- */
-export const pullDockerImage = (imageUri: string): Effect.Effect<void, Error> =>
-  Effect.gen(function* () {
-    const runtime = yield* detectDockerRuntime()
-
-    yield* Effect.logInfo(`Pulling image: ${imageUri}`)
-
-    yield* Effect.async<void, Error>((resume) => {
-      const proc = spawn(runtime.dockerPath, ["pull", imageUri], {
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-
-      proc.stdout.on("data", (data: Buffer) => {
-        process.stdout.write(`[Docker] ${data.toString()}`)
-      })
-
-      proc.stderr.on("data", (data: Buffer) => {
-        process.stderr.write(`[Docker] ${data.toString()}`)
-      })
-
-      proc.on("error", (err) => {
-        resume(Effect.fail(new Error(`Docker pull error: ${err.message}`)))
-      })
-
-      proc.on("close", (exitCode) => {
-        if (exitCode === 0) {
-          resume(Effect.succeed(undefined))
-        } else {
-          resume(
-            Effect.fail(new Error(`Docker pull failed with code ${exitCode}`)),
-          )
+        return {
+          exitCode,
+          stdout: stdout.join("\n"),
+          stderr: stderr.join("\n"),
         }
       })
-    })
 
-    yield* Effect.logInfo(`Image pulled: ${imageUri}`)
-  })
+    const runScoped: DockerService["runScoped"] = (config) =>
+      Effect.gen(function* () {
+        const args = buildDockerRunArgs(config, runtime)
 
-/**
- * Build a Docker image from a local context directory.
- */
-export const buildDockerImage = (options: {
-  contextPath: string
-  imageName: string
-  platform?: string
-}): Effect.Effect<void, Error> =>
-  Effect.gen(function* () {
-    const runtime = yield* detectDockerRuntime()
+        yield* Effect.logInfo(`Running (scoped): docker ${args.join(" ")}`)
 
-    const args = [
-      "build",
-      "-t",
-      options.imageName,
-      "--platform",
-      options.platform ?? "linux/arm64",
-      options.contextPath,
-    ]
+        const command = PlatformCommand.make(runtime.dockerPath, ...args)
 
-    yield* Effect.logInfo(`Building image: ${options.imageName}`)
-    yield* Effect.logInfo(`Context: ${options.contextPath}`)
+        const proc = yield* PlatformCommand.start(command)
 
-    yield* Effect.async<void, Error>((resume) => {
-      const proc = spawn(runtime.dockerPath, args, {
-        stdio: ["ignore", "pipe", "pipe"],
+        // Fork output processing in background (will be interrupted when scope closes)
+        yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stdout.write(`[Container] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        yield* proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stderr.write(`[Container] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        return proc
       })
 
-      proc.stdout.on("data", (data: Buffer) => {
-        process.stdout.write(`[Docker] ${data.toString()}`)
-      })
+    const build: DockerService["build"] = (options) =>
+      Effect.gen(function* () {
+        const args = [
+          "build",
+          "-t",
+          options.imageName,
+          "--platform",
+          options.platform ?? "linux/arm64",
+          options.contextPath,
+        ]
 
-      proc.stderr.on("data", (data: Buffer) => {
-        process.stderr.write(`[Docker] ${data.toString()}`)
-      })
+        yield* Effect.logInfo(`Building image: ${options.imageName}`)
+        yield* Effect.logInfo(`Context: ${options.contextPath}`)
 
-      proc.on("error", (err) => {
-        resume(Effect.fail(new Error(`Docker build error: ${err.message}`)))
-      })
+        const command = PlatformCommand.make(runtime.dockerPath, ...args)
 
-      proc.on("close", (exitCode) => {
-        if (exitCode === 0) {
-          resume(Effect.succeed(undefined))
-        } else {
-          resume(
-            Effect.fail(new Error(`Docker build failed with code ${exitCode}`)),
+        const proc = yield* PlatformCommand.start(command)
+
+        // Process stdout
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stdout.write(`[Docker] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        // Process stderr
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stderr.write(`[Docker] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        // Wait for streams and exit code
+        yield* Effect.all([
+          Effect.fromFiber(stdoutFiber),
+          Effect.fromFiber(stderrFiber),
+        ])
+
+        const exitCode = yield* proc.exitCode
+
+        if (exitCode !== 0) {
+          return yield* Effect.fail(
+            new Error(`Docker build failed with code ${exitCode}`),
           )
         }
-      })
-    })
 
-    yield* Effect.logInfo(`Image built: ${options.imageName}`)
-  })
+        yield* Effect.logInfo(`Image built: ${options.imageName}`)
+      })
+
+    const pull: DockerService["pull"] = (imageUri) =>
+      Effect.gen(function* () {
+        yield* Effect.logInfo(`Pulling image: ${imageUri}`)
+
+        const command = PlatformCommand.make(
+          runtime.dockerPath,
+          "pull",
+          imageUri,
+        )
+
+        const proc = yield* PlatformCommand.start(command)
+
+        // Process stdout
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stdout.write(`[Docker] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        // Process stderr
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              process.stderr.write(`[Docker] ${line}\n`)
+            }),
+          ),
+          Effect.fork,
+        )
+
+        // Wait for streams and exit code
+        yield* Effect.all([
+          Effect.fromFiber(stdoutFiber),
+          Effect.fromFiber(stderrFiber),
+        ])
+
+        const exitCode = yield* proc.exitCode
+
+        if (exitCode !== 0) {
+          return yield* Effect.fail(
+            new Error(`Docker pull failed with code ${exitCode}`),
+          )
+        }
+
+        yield* Effect.logInfo(`Image pulled: ${imageUri}`)
+      })
+
+    const list: DockerService["list"] = (containerNameFilter) =>
+      Effect.gen(function* () {
+        const command = PlatformCommand.make(
+          runtime.dockerPath,
+          "ps",
+          "-q",
+          "--filter",
+          `name=${containerNameFilter}`,
+        )
+
+        const proc = yield* PlatformCommand.start(command)
+
+        // Collect stdout
+        const containerIds: string[] = []
+        yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              const trimmed = line.trim()
+              if (trimmed) {
+                containerIds.push(trimmed)
+              }
+            }),
+          ),
+        )
+
+        const exitCode = yield* proc.exitCode
+
+        if (exitCode !== 0) {
+          return yield* Effect.fail(
+            new Error(`Docker ps failed with code ${exitCode}`),
+          )
+        }
+
+        return containerIds
+      })
+
+    const stop: DockerService["stop"] = (containerNameFilter) =>
+      Effect.gen(function* () {
+        // First list matching containers
+        const containerIds = yield* list(containerNameFilter)
+
+        if (containerIds.length === 0) {
+          yield* Effect.logDebug(
+            `No containers found matching: ${containerNameFilter}`,
+          )
+          return 0
+        }
+
+        yield* Effect.logInfo(`Stopping containers: ${containerIds.join(", ")}`)
+
+        // Stop all matching containers
+        const command = PlatformCommand.make(
+          runtime.dockerPath,
+          "stop",
+          ...containerIds,
+        )
+
+        const proc = yield* PlatformCommand.start(command)
+
+        // Process output for logging
+        yield* proc.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.logDebug(`[Docker stop] ${line.trim()}`),
+          ),
+        )
+
+        const exitCode = yield* proc.exitCode
+
+        if (exitCode !== 0) {
+          yield* Effect.logWarning(
+            `Docker stop exited with code ${exitCode} (some containers may have already stopped)`,
+          )
+        }
+
+        return containerIds.length
+      })
+
+    return {
+      run,
+      runScoped,
+      build,
+      pull,
+      stop,
+      list,
+      getRuntimeInfo,
+    } satisfies DockerService
+  },
+)
+
+/**
+ * Live Docker service layer.
+ * Note: Does not require CommandExecutor in the layer - it's required
+ * when the service methods are called.
+ */
+export const DockerLive: Layer.Layer<Docker, Error> = Layer.effect(
+  Docker,
+  makeDockerService,
+)
 
 /**
  * Create a container config for running a Lambda container.
@@ -322,60 +566,3 @@ export interface ContainerOutput {
   type: "stdout" | "stderr"
   data: string
 }
-
-/**
- * Run a Docker container and stream output to a queue.
- */
-export const runDockerContainerWithOutput = (
-  config: DockerRunConfig,
-  outputQueue: Queue.Queue<ContainerOutput>,
-): Effect.Effect<DockerRunResult, Error> =>
-  Effect.gen(function* () {
-    const runtime = yield* detectDockerRuntime()
-    const args = buildDockerArgs(config, runtime)
-
-    const result = yield* Effect.async<DockerRunResult, Error>((resume) => {
-      const stdout: string[] = []
-      const stderr: string[] = []
-
-      const proc = spawn(runtime.dockerPath, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-
-      proc.stdout.on("data", (data: Buffer) => {
-        const text = data.toString()
-        stdout.push(text)
-        Effect.runSync(Queue.offer(outputQueue, { type: "stdout", data: text }))
-      })
-
-      proc.stderr.on("data", (data: Buffer) => {
-        const text = data.toString()
-        stderr.push(text)
-        Effect.runSync(Queue.offer(outputQueue, { type: "stderr", data: text }))
-      })
-
-      proc.on("error", (err) => {
-        resume(Effect.fail(new Error(`Docker process error: ${err.message}`)))
-      })
-
-      proc.on("close", (exitCode) => {
-        resume(
-          Effect.succeed({
-            exitCode: exitCode ?? 1,
-            stdout: stdout.join(""),
-            stderr: stderr.join(""),
-          }),
-        )
-      })
-
-      // Set up timeout
-      const timeoutId = setTimeout(() => {
-        proc.kill("SIGTERM")
-        setTimeout(() => proc.kill("SIGKILL"), 5000)
-      }, config.timeoutSeconds * 1000)
-
-      proc.on("close", () => clearTimeout(timeoutId))
-    })
-
-    return result
-  })
