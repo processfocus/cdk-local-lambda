@@ -362,3 +362,32 @@ applyLiveLambdaAspect(exampleStack)
 ```ts
 import "../lib/hook-bootstrap.js"
 ```
+
+# Limitations
+
+## Container idle timeout (4 minutes vs AWS's ~15 minutes)
+
+AWS Lambda keeps containers warm for ~5-15 minutes between invocations.
+Their Runtime API implementation can hold HTTP connections open
+indefinitely because they control the entire infrastructure end-to-end.
+
+In local development, we're constrained by HTTP server limitations:
+
+- Bun's maximum `idleTimeout` is 255 seconds (~4.25 minutes)
+- This is a practical limit to prevent resource exhaustion in HTTP servers
+- When no invocations arrive within this window, the connection would be
+  forcefully closed by Bun, causing the Lambda RIC to crash with
+  "Failed to get next invocation. No Response from endpoint"
+
+Our solution: the Runtime API server times out slightly before Bun does
+(240s vs 255s) and returns HTTP 503, which signals the RIC to exit
+gracefully. The container will be automatically restarted on the next
+invocation (~2 seconds for warm images).
+
+**In practice this rarely matters**: during active development, invocations
+typically arrive frequently. The 4-minute idle timeout only affects
+long periods of inactivity, and container restarts are fast.
+
+This is an inherent limitation of local Lambda emulation - AWS's
+purpose-built infrastructure simply doesn't have the same timeout
+constraints as standard HTTP servers.

@@ -62,20 +62,67 @@ export const makeRuntimeApiState = () =>
   })
 
 /**
+ * Maximum time to wait for an invocation before closing the connection.
+ * Set slightly below Bun's idleTimeout (255s) to ensure we close gracefully
+ * before Bun forcefully closes the connection.
+ *
+ * ## Why containers can't stay warm indefinitely (like AWS Lambda does)
+ *
+ * AWS Lambda keeps containers warm for ~5-15 minutes between invocations.
+ * Their Runtime API implementation can hold HTTP connections open indefinitely
+ * because they control the entire infrastructure end-to-end.
+ *
+ * In local development, we're constrained by HTTP server limitations:
+ * - Bun's maximum `idleTimeout` is 255 seconds (~4.25 minutes)
+ * - This is a practical limit to prevent resource exhaustion in HTTP servers
+ * - When the timeout expires, Bun forcefully closes the connection
+ * - The Lambda RIC interprets this as a fatal "No Response from endpoint" error
+ *
+ * Our solution: timeout slightly before Bun does (240s vs 255s) and return
+ * HTTP 503, which causes the RIC to exit gracefully. The container will be
+ * automatically restarted on the next invocation (~2 seconds for warm images).
+ *
+ * This is an inherent limitation of local Lambda emulation - AWS's purpose-built
+ * infrastructure simply doesn't have the same timeout constraints.
+ */
+const INVOCATION_POLL_TIMEOUT_MS = 240_000 // 4 minutes
+
+/**
  * Handle GET /2018-06-01/runtime/invocation/next
- * Polls for an invocation with short timeouts to handle container restarts gracefully.
- * This ensures that if the container disconnects during a rebuild, the invocation
- * isn't lost - it remains in the queue for the new container to pick up.
+ * Polls for an invocation with a bounded timeout to handle idle containers gracefully.
+ * This ensures that if no invocations arrive within the timeout, the container
+ * exits cleanly rather than being killed by an HTTP timeout.
+ *
+ * When the timeout expires, we return a 503 Service Unavailable which signals
+ * to the Lambda RIC that it should exit. The container will be restarted
+ * automatically when the next invocation arrives.
  */
 const handleInvocationNext = (state: RuntimeApiState) =>
   Effect.gen(function* () {
     yield* Effect.logDebug("Container polling for next invocation")
+
+    const startTime = Date.now()
 
     // Poll with timeout instead of blocking indefinitely
     // This allows us to detect connection issues and keep the invocation in the queue
     let invocation: LambdaInvocation | null = null
 
     while (invocation === null) {
+      // Check if we've exceeded the timeout
+      if (Date.now() - startTime > INVOCATION_POLL_TIMEOUT_MS) {
+        yield* Effect.logDebug(
+          "Invocation poll timeout - returning 503 to trigger container exit",
+        )
+        // Return 503 Service Unavailable to signal the RIC to exit gracefully
+        // This is expected behavior for idle containers in local development
+        return HttpServerResponse.empty({
+          status: 503,
+          headers: Headers.fromInput({
+            "Content-Type": "application/json",
+          }),
+        })
+      }
+
       // Try to take from queue with a short timeout
       const result = yield* Queue.poll(state.invocationQueue)
 
