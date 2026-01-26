@@ -195,7 +195,6 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
     const command = PlatformCommand.make("npx", ...args).pipe(
       PlatformCommand.env(env),
       PlatformCommand.stdin("inherit"),
-      PlatformCommand.runInShell(true),
     )
 
     const proc = yield* PlatformCommand.start(command)
