@@ -62,9 +62,7 @@ export const makeRuntimeApiState = () =>
   })
 
 /**
- * Maximum time to wait for an invocation before closing the connection.
- * Set slightly below Bun's idleTimeout (255s) to ensure we close gracefully
- * before Bun forcefully closes the connection.
+ * Default poll timeout - used when not overridden.
  *
  * ## Why containers can't stay warm indefinitely (like AWS Lambda does)
  *
@@ -85,7 +83,7 @@ export const makeRuntimeApiState = () =>
  * This is an inherent limitation of local Lambda emulation - AWS's purpose-built
  * infrastructure simply doesn't have the same timeout constraints.
  */
-const INVOCATION_POLL_TIMEOUT_MS = 240_000 // 4 minutes
+const DEFAULT_POLL_TIMEOUT_MS = 240_000 // 4 minutes
 
 /**
  * Handle GET /2018-06-01/runtime/invocation/next
@@ -97,7 +95,7 @@ const INVOCATION_POLL_TIMEOUT_MS = 240_000 // 4 minutes
  * to the Lambda RIC that it should exit. The container will be restarted
  * automatically when the next invocation arrives.
  */
-const handleInvocationNext = (state: RuntimeApiState) =>
+const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
   Effect.gen(function* () {
     yield* Effect.logDebug("Container polling for next invocation")
 
@@ -109,7 +107,7 @@ const handleInvocationNext = (state: RuntimeApiState) =>
 
     while (invocation === null) {
       // Check if we've exceeded the timeout
-      if (Date.now() - startTime > INVOCATION_POLL_TIMEOUT_MS) {
+      if (Date.now() - startTime > pollTimeoutMs) {
         yield* Effect.logDebug(
           "Invocation poll timeout - returning 503 to trigger container exit",
         )
@@ -249,11 +247,11 @@ const handleInitError = (state: RuntimeApiState) =>
 /**
  * Create the Runtime API router for a given state.
  */
-const makeRuntimeApiRouter = (state: RuntimeApiState) =>
+const makeRuntimeApiRouter = (state: RuntimeApiState, pollTimeoutMs: number) =>
   HttpRouter.empty.pipe(
     HttpRouter.get(
       "/2018-06-01/runtime/invocation/next",
-      handleInvocationNext(state),
+      handleInvocationNext(state, pollTimeoutMs),
     ),
     HttpRouter.post(
       "/2018-06-01/runtime/invocation/:requestId/response",
@@ -271,18 +269,19 @@ const makeRuntimeApiRouter = (state: RuntimeApiState) =>
  * Returns the actual port and state for this server instance.
  *
  * The server is scoped - it will be stopped when the scope closes.
+ *
+ * @param pollTimeoutMs - How long to wait for an invocation before returning 503.
+ *                        Defaults to DEFAULT_POLL_TIMEOUT_MS.
  */
-export const startRuntimeApiServer = (): Effect.Effect<
-  RuntimeApiServer,
-  never,
-  Scope.Scope
-> =>
+export const startRuntimeApiServer = (
+  pollTimeoutMs: number = DEFAULT_POLL_TIMEOUT_MS,
+): Effect.Effect<RuntimeApiServer, never, Scope.Scope> =>
   Effect.gen(function* () {
     // Create state (queues) for this server
     const state = yield* makeRuntimeApiState()
 
     // Create router for this state
-    const router = makeRuntimeApiRouter(state)
+    const router = makeRuntimeApiRouter(state, pollTimeoutMs)
 
     // Create HTTP server on ephemeral port (port: 0)
     const server = yield* BunHttpServer.make({

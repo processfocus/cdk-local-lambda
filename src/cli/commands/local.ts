@@ -28,9 +28,10 @@ import {
 import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
 import { BunContext } from "@effect/platform-bun"
 import {
+  Duration,
   Effect,
   Exit,
-  type Fiber,
+  Fiber,
   Logger,
   LogLevel,
   Queue,
@@ -86,6 +87,13 @@ interface DiscoveredFunction {
 }
 
 /**
+ * Default idle timeout before proactively stopping containers.
+ * Set slightly below the poll timeout (240s) to stop container before
+ * the Lambda RIC gets a 503 error.
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 230_000 // 230 seconds (~4 minutes)
+
+/**
  * State for a running function container.
  */
 interface FunctionContainer {
@@ -106,6 +114,8 @@ interface FunctionContainer {
       resolve: (response: ResponseMessage) => void
     }
   >
+  /** Fiber for the idle shutdown timer, cancelled when new responses arrive */
+  idleTimerFiber: Fiber.RuntimeFiber<void, never> | null
 }
 
 /**
@@ -433,12 +443,66 @@ const isLambdaInitError = (
 ): r is LambdaInitError => !("requestId" in r) && "errorType" in r
 
 /**
+ * Reset the idle timer for a container.
+ * After the timeout expires with no new responses, the container is stopped.
+ * This prevents the confusing 503 error from the Lambda RIC when the poll times out.
+ */
+const resetIdleTimer = (
+  container: FunctionContainer,
+  containersRef: Ref.Ref<Map<string, FunctionContainer>>,
+  idleTimeoutMs: number,
+): Effect.Effect<void, never, CommandExecutor.CommandExecutor> =>
+  Effect.gen(function* () {
+    // Cancel existing timer if any
+    if (container.idleTimerFiber) {
+      yield* Fiber.interrupt(container.idleTimerFiber).pipe(
+        Effect.catchAll(() => Effect.void),
+      )
+      container.idleTimerFiber = null
+    }
+
+    // Start new timer - use never for error type since we catch all errors
+    const timerFiber: Fiber.RuntimeFiber<void, never> = yield* Effect.gen(
+      function* () {
+        yield* Effect.sleep(Duration.millis(idleTimeoutMs))
+
+        // Timer expired - stop container proactively
+        yield* Effect.logInfo(
+          `[Local] Stopping idle container ${container.fn.functionName} (will restart on next invocation)`,
+        )
+
+        // Stop the container using Docker
+        const docker = yield* Docker
+        yield* docker.stop(container.containerName).pipe(
+          Effect.scoped,
+          Effect.catchAll(() => Effect.void),
+        )
+
+        // Remove from map so next invocation creates fresh container
+        const currentContainers = yield* Ref.get(containersRef)
+        currentContainers.delete(container.fn.functionName)
+        yield* Ref.set(containersRef, currentContainers)
+      },
+    ).pipe(
+      Effect.provide(DockerLive),
+      Effect.catchAll(() => Effect.void),
+      Effect.forkDaemon,
+    )
+
+    container.idleTimerFiber = timerFiber
+  })
+
+/**
  * Process responses from a container and dispatch to waiting callers.
+ * After each response, resets the idle timer to proactively stop the container
+ * before the poll timeout causes confusing Lambda RIC errors.
  */
 const processContainerResponses = (
   container: FunctionContainer,
+  containersRef: Ref.Ref<Map<string, FunctionContainer>>,
+  idleTimeoutMs: number,
   client: ReturnType<typeof makeAppSyncClient>,
-) =>
+): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     const responseChannel = buildChannelName.response(container.fn.functionName)
 
@@ -475,6 +539,9 @@ const processContainerResponses = (
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
       yield* Effect.logDebug(`[Local] Sent response for ${response.requestId}`)
+
+      // Reset idle timer - container will be stopped if no new invocations arrive
+      yield* resetIdleTimer(container, containersRef, idleTimeoutMs)
     }
   })
 
@@ -709,6 +776,8 @@ const ensureContainerStarted = (
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
   serverScope: Scope.Scope,
   projectRoot: string,
+  idleTimeoutMs: number,
+  pollTimeoutMs: number,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
 ): Effect.Effect<FunctionContainer, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
@@ -725,9 +794,10 @@ const ensureContainerStarted = (
     )
 
     // Create Runtime API server on ephemeral port
-    const { port, state: runtimeState } = yield* startRuntimeApiServer().pipe(
-      Effect.provideService(Scope.Scope, serverScope),
-    )
+    // Use poll timeout that's shorter than idle timeout so container exits naturally
+    const { port, state: runtimeState } = yield* startRuntimeApiServer(
+      pollTimeoutMs,
+    ).pipe(Effect.provideService(Scope.Scope, serverScope))
 
     // Generate container name and image name
     const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
@@ -744,6 +814,7 @@ const ensureContainerStarted = (
       imageName,
       isRebuilding: false,
       pendingResponses: new Map(),
+      idleTimerFiber: null,
     }
 
     // Add to map immediately to prevent race conditions
@@ -774,9 +845,12 @@ const ensureContainerStarted = (
     container.containerFiber = containerFiber
 
     // Start processing responses in the background using forkDaemon
-    yield* processContainerResponses(container, appSyncClient).pipe(
-      Effect.forkDaemon,
-    )
+    yield* processContainerResponses(
+      container,
+      containersRef,
+      idleTimeoutMs,
+      appSyncClient,
+    ).pipe(Effect.forkDaemon)
 
     return container
   })
@@ -876,9 +950,12 @@ const rebuildDockerContainer = (
       Effect.scoped,
       Effect.tap((result) =>
         Effect.gen(function* () {
-          if (result.exitCode !== 0) {
+          // Only suppress errors for expected exit codes from docker stop:
+          // 0: clean, 143: SIGTERM, 137: SIGKILL
+          const code = result.exitCode
+          if (code !== 0 && code !== 143 && code !== 137) {
             yield* Effect.logError(
-              `Container for ${functionId} exited with code ${result.exitCode}`,
+              `Container for ${functionId} exited with code ${code}`,
             )
             yield* Effect.logError(`stderr: ${result.stderr}`)
           }
@@ -912,6 +989,8 @@ const handleDockerInvocation = (
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
   serverScope: Scope.Scope,
   projectRoot: string,
+  idleTimeoutMs: number,
+  pollTimeoutMs: number,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
 ): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
@@ -921,6 +1000,8 @@ const handleDockerInvocation = (
       containersRef,
       serverScope,
       projectRoot,
+      idleTimeoutMs,
+      pollTimeoutMs,
       appSyncClient,
     )
 
@@ -1193,6 +1274,20 @@ const debugOption = Options.boolean("debug").pipe(
   Options.withDescription("Enable debug logging"),
 )
 
+const idleTimeoutOption = Options.integer("idle-timeout").pipe(
+  Options.withDefault(DEFAULT_IDLE_TIMEOUT_MS),
+  Options.withDescription(
+    "Idle timeout in ms before stopping containers (default: 230000)",
+  ),
+)
+
+const pollTimeoutOption = Options.integer("poll-timeout").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Poll timeout in ms for Runtime API (default: idle-timeout - 10s). Must be shorter than idle-timeout.",
+  ),
+)
+
 /**
  * Local command definition.
  */
@@ -1205,8 +1300,19 @@ export const localCommand = Command.make(
     stacks: stacksOption,
     all: allStacksOption,
     debug: debugOption,
+    idleTimeout: idleTimeoutOption,
+    pollTimeout: pollTimeoutOption,
   },
-  ({ profile, region, qualifier, stacks, all, debug }) => {
+  ({
+    profile,
+    region,
+    qualifier,
+    stacks,
+    all,
+    debug,
+    idleTimeout,
+    pollTimeout,
+  }) => {
     const logLevel = debug ? LogLevel.Debug : LogLevel.Info
     return Effect.gen(function* () {
       yield* Effect.logInfo("[Local] Starting local Lambda development...")
@@ -1217,6 +1323,13 @@ export const localCommand = Command.make(
         stacks._tag === "Some"
           ? stacks.value.split(",").map((s) => s.trim())
           : undefined
+
+      // Poll timeout should be shorter than idle timeout so containers exit naturally
+      // before we try to stop them. Default: idle timeout - 10 seconds.
+      const effectivePollTimeout =
+        pollTimeout._tag === "Some"
+          ? pollTimeout.value
+          : Math.max(idleTimeout - 10_000, 5_000) // At least 5 seconds
 
       if (profileValue) {
         process.env.AWS_PROFILE = profileValue
@@ -1379,6 +1492,8 @@ export const localCommand = Command.make(
                     containers,
                     serverScope,
                     projectRoot,
+                    idleTimeout,
+                    effectivePollTimeout,
                     appSyncClient!,
                   ).pipe(
                     Effect.catchAll((error) =>

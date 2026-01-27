@@ -227,27 +227,47 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
         // Run the command and collect output
         const proc = yield* PlatformCommand.start(command)
 
-        // Process stdout
+        // Lambda RIC error/output patterns that are expected during poll timeout
+        // These are suppressed from output to avoid scary error messages
+        const isExpectedRicOutput = (line: string): boolean =>
+          line.includes("LAMBDA_RUNTIME Failed to get next invocation") ||
+          line.includes("Failed to get next invocation, error 503") ||
+          // Filter out the Node.js stack trace from Lambda RIC exit
+          line.includes("triggerUncaughtException") ||
+          line.includes("[Error: Failed to get next invocation") ||
+          // "Node.js v" version line after error
+          line.startsWith("Node.js v") ||
+          line.includes("node:internal/process/promises") ||
+          // Stack trace caret line (just whitespace and ^)
+          /^\s*\^?\s*$/.test(line)
+
+        // Process stdout - filter expected errors, forward the rest
         const stdoutFiber = yield* proc.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.sync(() => {
               stdout.push(line)
-              process.stdout.write(`[Container] ${line}\n`)
+              // Suppress expected RIC output (poll timeout errors)
+              if (!isExpectedRicOutput(line)) {
+                process.stdout.write(`[Container] ${line}\n`)
+              }
             }),
           ),
           Effect.fork,
         )
 
-        // Process stderr
+        // Process stderr - filter expected errors, forward the rest
         const stderrFiber = yield* proc.stderr.pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.sync(() => {
               stderr.push(line)
-              process.stderr.write(`[Container] ${line}\n`)
+              // Suppress expected RIC output (poll timeout errors)
+              if (!isExpectedRicOutput(line)) {
+                process.stderr.write(`[Container] ${line}\n`)
+              }
             }),
           ),
           Effect.fork,
@@ -261,8 +281,16 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
 
         const exitCode = yield* proc.exitCode
 
-        if (exitCode !== 0) {
+        // Only suppress warnings for expected exit codes:
+        // - 0: Clean exit
+        // - 1: Lambda RIC exit after 503 poll timeout (expected)
+        // - 143 (128+15): SIGTERM from docker stop
+        // - 137 (128+9): SIGKILL from docker stop timeout
+        const expectedExitCodes = [0, 1, 143, 137]
+        if (!expectedExitCodes.includes(exitCode)) {
           yield* Effect.logWarning(`Container exited with code ${exitCode}`)
+        } else if (exitCode !== 0) {
+          yield* Effect.logDebug(`Container exited with code ${exitCode}`)
         }
 
         return {
