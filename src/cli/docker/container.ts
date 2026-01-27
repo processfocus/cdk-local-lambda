@@ -241,16 +241,40 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
           // Stack trace caret line (just whitespace and ^)
           /^\s*\^?\s*$/.test(line)
 
+        // Pattern to parse Lambda log format: TIMESTAMP\tREQUEST_ID\tLEVEL\tMESSAGE
+        // Lambda uses tabs between fields. Captures: [1] = request ID, [2] = level + message
+        const lambdaLogPattern =
+          /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)[\t\s]+([0-9a-f-]{36})[\t\s]+(.*)$/i
+
+        // Helper to format log line with invocation prefix
+        const formatLine = (
+          rawLine: string,
+        ): { prefix: string; content: string } => {
+          // Strip carriage returns that can cause terminal corruption
+          const line = rawLine.replace(/\r/g, "")
+          const match = lambdaLogPattern.exec(line)
+          if (match && config.invocationContexts) {
+            const requestId = match[2]
+            const ctx = config.invocationContexts.get(requestId)
+            if (ctx) {
+              // Strip timestamp and request ID, keep just LEVEL MESSAGE
+              return { prefix: `[${ctx.num}]`, content: match[3] }
+            }
+          }
+          return { prefix: "[Container]", content: line }
+        }
+
         // Process stdout - filter expected errors, forward the rest
         const stdoutFiber = yield* proc.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
+          Stream.runForEach((rawLine) =>
             Effect.sync(() => {
-              stdout.push(line)
+              stdout.push(rawLine)
               // Suppress expected RIC output (poll timeout errors)
-              if (!isExpectedRicOutput(line)) {
-                process.stdout.write(`[Container] ${line}\n`)
+              if (!isExpectedRicOutput(rawLine)) {
+                const { prefix, content } = formatLine(rawLine)
+                process.stdout.write(`${prefix} ${content}\n`)
               }
             }),
           ),
@@ -261,12 +285,13 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
         const stderrFiber = yield* proc.stderr.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) =>
+          Stream.runForEach((rawLine) =>
             Effect.sync(() => {
-              stderr.push(line)
+              stderr.push(rawLine)
               // Suppress expected RIC output (poll timeout errors)
-              if (!isExpectedRicOutput(line)) {
-                process.stderr.write(`[Container] ${line}\n`)
+              if (!isExpectedRicOutput(rawLine)) {
+                const { prefix, content } = formatLine(rawLine)
+                process.stderr.write(`${prefix} ${content}\n`)
               }
             }),
           ),
@@ -550,6 +575,7 @@ export const makeLambdaContainerConfig = (options: {
   awsRegion?: string
   platform?: string
   additionalEnv?: Record<string, string>
+  invocationContexts?: Map<string, { num: number }>
 }): DockerRunConfig => ({
   imageUri: options.imageUri,
   containerName: `lambda-${options.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`,
@@ -569,6 +595,7 @@ export const makeLambdaContainerConfig = (options: {
   memoryMB: options.memoryMB,
   timeoutSeconds: options.timeoutSeconds,
   networkMode: "bridge",
+  invocationContexts: options.invocationContexts,
 })
 
 /**

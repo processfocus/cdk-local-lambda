@@ -26,6 +26,8 @@ export interface DockerRunConfig {
   workdir?: string
   /** Additional Docker run arguments */
   additionalArgs?: string[]
+  /** Optional invocation context map for log prefixing (requestId -> { num }) */
+  invocationContexts?: Map<string, { num: number }>
 }
 
 /**

@@ -133,6 +133,20 @@ interface NodejsWorker {
 }
 
 /**
+ * Invocation context for tracking and logging.
+ */
+export interface InvocationContext {
+  /** Sequential invocation number */
+  num: number
+  /** Start timestamp in milliseconds */
+  start: number
+  /** Function name */
+  fn: string
+  /** Whether this is a Docker container invocation */
+  isDocker: boolean
+}
+
+/**
  * Check if bootstrap stack version matches the expected version.
  * Returns true if version matches, false if missing or mismatched.
  */
@@ -364,6 +378,7 @@ const startFunctionContainer = (
   fn: DiscoveredFunction,
   port: number,
   projectRoot: string,
+  invocationContexts?: Map<string, { num: number }>,
 ): Effect.Effect<
   Fiber.RuntimeFiber<void, Error>,
   Error,
@@ -412,6 +427,7 @@ const startFunctionContainer = (
       memoryMB: fn.memoryMB,
       timeoutSeconds: 3600, // Long timeout - container stays running
       platform,
+      invocationContexts,
     })
 
     yield* Effect.logInfo(
@@ -502,6 +518,7 @@ const processContainerResponses = (
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
   idleTimeoutMs: number,
   client: ReturnType<typeof makeAppSyncClient>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     const responseChannel = buildChannelName.response(container.fn.functionName)
@@ -540,6 +557,22 @@ const processContainerResponses = (
       yield* client.publishResponse(responseChannel, response)
       yield* Effect.logDebug(`[Local] Sent response for ${response.requestId}`)
 
+      // Print end marker with timing
+      const ctx = invocationContexts.get(response.requestId)
+      if (ctx) {
+        const durationMs = Date.now() - ctx.start
+        if (response.error) {
+          console.log(
+            `[${ctx.num}] \u2514\u2500\u2500 \u2717 ${response.error.errorType}: ${response.error.errorMessage} (${durationMs}ms) \u2500\u2500`,
+          )
+        } else {
+          console.log(
+            `[${ctx.num}] \u2514\u2500\u2500 \u2713 Done (${durationMs}ms) \u2500\u2500`,
+          )
+        }
+        invocationContexts.delete(response.requestId)
+      }
+
       // Reset idle timer - container will be stopped if no new invocations arrive
       yield* resetIdleTimer(container, containersRef, idleTimeoutMs)
     }
@@ -555,6 +588,7 @@ const startNodejsWorker = (
   port: number,
   projectRoot: string,
   env: Record<string, string>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<ChildProcess, Error> =>
   Effect.gen(function* () {
     if (!fn.localHandler) {
@@ -603,26 +637,43 @@ const startNodejsWorker = (
       stdio: ["ignore", "pipe", "pipe"],
     })
 
-    // Forward stdout/stderr with function name prefix
+    // Pattern to parse Lambda log format: TIMESTAMP\tREQUEST_ID\tLEVEL\tMESSAGE
+    // Lambda uses tabs between fields. Captures: [1] = request ID, [2] = level + message
+    const lambdaLogPattern =
+      /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)[\t\s]+([0-9a-f-]{36})[\t\s]+(.*)$/i
+
+    // Helper to format log line with invocation prefix
+    const formatLine = (
+      rawLine: string,
+    ): { prefix: string; content: string } => {
+      // Strip carriage returns that can cause terminal corruption
+      const line = rawLine.replace(/\r/g, "")
+      const match = lambdaLogPattern.exec(line)
+      if (match) {
+        const requestId = match[2]
+        const ctx = invocationContexts.get(requestId)
+        if (ctx) {
+          // Strip timestamp and request ID, keep just LEVEL MESSAGE
+          return { prefix: `[${ctx.num}]`, content: match[3] }
+        }
+      }
+      return { prefix: "[Worker]", content: line }
+    }
+
+    // Forward stdout/stderr with invocation number prefix
     workerProcess.stdout?.on("data", (data: Buffer) => {
       const lines = data.toString().trim().split("\n")
-      for (const line of lines) {
-        Effect.runSync(
-          Effect.logInfo(line).pipe(
-            Effect.annotateLogs("function", fn.functionName),
-          ),
-        )
+      for (const rawLine of lines) {
+        const { prefix, content } = formatLine(rawLine)
+        console.log(`${prefix} ${content}`)
       }
     })
 
     workerProcess.stderr?.on("data", (data: Buffer) => {
       const lines = data.toString().trim().split("\n")
-      for (const line of lines) {
-        Effect.runSync(
-          Effect.logError(line).pipe(
-            Effect.annotateLogs("function", fn.functionName),
-          ),
-        )
+      for (const rawLine of lines) {
+        const { prefix, content } = formatLine(rawLine)
+        console.error(`${prefix} ${content}`)
       }
     })
 
@@ -651,6 +702,7 @@ const startNodejsWorker = (
 const processWorkerResponses = (
   worker: NodejsWorker,
   client: ReturnType<typeof makeAppSyncClient>,
+  invocationContexts: Map<string, InvocationContext>,
 ) =>
   Effect.gen(function* () {
     const responseChannel = buildChannelName.response(worker.fn.functionName)
@@ -688,6 +740,22 @@ const processWorkerResponses = (
       // Send response back via AppSync
       yield* client.publishResponse(responseChannel, response)
       yield* Effect.logDebug(`[Local] Sent response for ${response.requestId}`)
+
+      // Print end marker with timing
+      const ctx = invocationContexts.get(response.requestId)
+      if (ctx) {
+        const durationMs = Date.now() - ctx.start
+        if (response.error) {
+          console.log(
+            `[${ctx.num}] \u2514\u2500\u2500 \u2717 ${response.error.errorType}: ${response.error.errorMessage} (${durationMs}ms) \u2500\u2500`,
+          )
+        } else {
+          console.log(
+            `[${ctx.num}] \u2514\u2500\u2500 \u2713 Done (${durationMs}ms) \u2500\u2500`,
+          )
+        }
+        invocationContexts.delete(response.requestId)
+      }
     }
   })
 
@@ -703,6 +771,7 @@ const ensureWorkerStarted = (
   serverScope: Scope.Scope,
   projectRoot: string,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<NodejsWorker, Error> =>
   Effect.gen(function* () {
     // Check if worker already exists
@@ -742,6 +811,7 @@ const ensureWorkerStarted = (
       port,
       projectRoot,
       invocationEnv,
+      invocationContexts,
     ).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
@@ -761,7 +831,9 @@ const ensureWorkerStarted = (
     worker.workerProcess = workerProcess
 
     // Start processing responses in the background
-    Effect.runFork(processWorkerResponses(worker, appSyncClient))
+    Effect.runFork(
+      processWorkerResponses(worker, appSyncClient, invocationContexts),
+    )
 
     return worker
   })
@@ -779,6 +851,7 @@ const ensureContainerStarted = (
   idleTimeoutMs: number,
   pollTimeoutMs: number,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<FunctionContainer, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     // Check if container already exists
@@ -826,6 +899,7 @@ const ensureContainerStarted = (
       fn,
       port,
       projectRoot,
+      invocationContexts,
     ).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
@@ -850,6 +924,7 @@ const ensureContainerStarted = (
       containersRef,
       idleTimeoutMs,
       appSyncClient,
+      invocationContexts,
     ).pipe(Effect.forkDaemon)
 
     return container
@@ -992,6 +1067,8 @@ const handleDockerInvocation = (
   idleTimeoutMs: number,
   pollTimeoutMs: number,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
+  invocationCounter: Ref.Ref<number>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     // Ensure container is started (lazy startup on first invocation)
@@ -1003,6 +1080,25 @@ const handleDockerInvocation = (
       idleTimeoutMs,
       pollTimeoutMs,
       appSyncClient,
+      invocationContexts,
+    )
+
+    // Assign invocation number and track context for logging
+    const invocationNum = yield* Ref.updateAndGet(
+      invocationCounter,
+      (n) => n + 1,
+    )
+    const startTime = Date.now()
+    invocationContexts.set(invocation.requestId, {
+      num: invocationNum,
+      start: startTime,
+      fn: fn.functionName,
+      isDocker: true,
+    })
+
+    // Print start marker
+    console.log(
+      `\n[${invocationNum}] \u250c\u2500\u2500 [Docker] ${fn.functionName} \u2500\u2500`,
     )
 
     // Log if queuing during a rebuild
@@ -1046,6 +1142,8 @@ const handleNodejsInvocation = (
   serverScope: Scope.Scope,
   projectRoot: string,
   appSyncClient: ReturnType<typeof makeAppSyncClient>,
+  invocationCounter: Ref.Ref<number>,
+  invocationContexts: Map<string, InvocationContext>,
 ): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
     // Get env vars from invocation (forwarded from bridge Lambda)
@@ -1059,6 +1157,25 @@ const handleNodejsInvocation = (
       serverScope,
       projectRoot,
       appSyncClient,
+      invocationContexts,
+    )
+
+    // Assign invocation number and track context for logging
+    const invocationNum = yield* Ref.updateAndGet(
+      invocationCounter,
+      (n) => n + 1,
+    )
+    const startTime = Date.now()
+    invocationContexts.set(invocation.requestId, {
+      num: invocationNum,
+      start: startTime,
+      fn: fn.functionName,
+      isDocker: false,
+    })
+
+    // Print start marker
+    console.log(
+      `\n[${invocationNum}] \u250c\u2500\u2500 ${fn.functionName} \u2500\u2500`,
     )
 
     yield* Effect.logDebug(
@@ -1384,6 +1501,11 @@ export const localCommand = Command.make(
       // Track Docker functions with active file watchers
       const watchedDockerFunctions = new Set<string>()
 
+      // Invocation tracking for improved logging output
+      const invocationCounter = yield* Ref.make<number>(0)
+      // Use a plain Map for invocation contexts so it can be accessed from stream callbacks
+      const invocationContexts = new Map<string, InvocationContext>()
+
       // Project root is the current working directory (where CDK app lives)
       const projectRoot = process.cwd()
 
@@ -1495,6 +1617,8 @@ export const localCommand = Command.make(
                     idleTimeout,
                     effectivePollTimeout,
                     appSyncClient!,
+                    invocationCounter,
+                    invocationContexts,
                   ).pipe(
                     Effect.catchAll((error) =>
                       Effect.logError(
@@ -1517,6 +1641,8 @@ export const localCommand = Command.make(
                     serverScope,
                     projectRoot,
                     appSyncClient!,
+                    invocationCounter,
+                    invocationContexts,
                   ).pipe(
                     Effect.catchAll((error) =>
                       Effect.logError(
