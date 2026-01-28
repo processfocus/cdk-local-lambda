@@ -778,7 +778,23 @@ const ensureWorkerStarted = (
     const currentWorkers = yield* Ref.get(workersRef)
     const existing = currentWorkers.get(fn.functionName)
     if (existing) {
-      return existing
+      // Check if env vars have changed (e.g., after CDK redeploy)
+      const envChanged =
+        JSON.stringify(existing.env) !== JSON.stringify(invocationEnv)
+      if (envChanged) {
+        yield* Effect.logInfo(
+          `[Local] Environment changed for ${fn.functionName}, restarting worker...`,
+        )
+        // Kill the old worker
+        yield* Effect.try(() => existing.workerProcess.kill("SIGTERM")).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+        // Remove from map so we create a new one below
+        currentWorkers.delete(fn.functionName)
+        yield* Ref.set(workersRef, currentWorkers)
+      } else {
+        return existing
+      }
     }
 
     // Worker doesn't exist - start it lazily
@@ -1512,11 +1528,14 @@ export const localCommand = Command.make(
       let appSyncClient: ReturnType<typeof makeAppSyncClient> | null = null
 
       // Track if we've logged the "Watching" message (only log once)
-      const logState = { hasLoggedWatching: false }
+      const logState = { hasLoggedWatching: false, hasDiscoveredOnce: false }
 
       // Function to start/update the daemon with discovered functions
       const startOrUpdateDaemon = Effect.gen(function* () {
-        yield* Effect.logInfo("[Local] Discovering functions...")
+        // Only show "Discovering functions..." on first run
+        if (!logState.hasDiscoveredOnce) {
+          yield* Effect.logInfo("[Local] Discovering functions...")
+        }
 
         // Get AppSync endpoints (may need to wait for first deploy)
         if (!appSyncClient) {
@@ -1583,7 +1602,11 @@ export const localCommand = Command.make(
               return `${shortName} (${mode})`
             })
             .join(", ")
-          yield* Effect.logInfo(`[Local] Functions: ${summary}`)
+          // Use different message for first discovery vs subsequent
+          const prefix = logState.hasDiscoveredOnce
+            ? "[Local] Functions added:"
+            : "[Local] Functions:"
+          yield* Effect.logInfo(`${prefix} ${summary}`)
         }
 
         // Register functions and set up subscriptions
@@ -1712,6 +1735,9 @@ export const localCommand = Command.make(
           logState.hasLoggedWatching = true
           yield* Effect.logInfo("[Local] Ready for invocations")
         }
+
+        // Mark that we've completed first discovery
+        logState.hasDiscoveredOnce = true
       })
 
       // Handle CDK watch events (stack discovery and deploy completion)
