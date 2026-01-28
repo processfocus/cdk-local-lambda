@@ -632,7 +632,7 @@ const startNodejsWorker = (
       AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(fn.memoryMB),
     }
 
-    yield* Effect.logInfo(
+    yield* Effect.logDebug(
       `[Local] Starting Node.js worker for ${fn.functionName} on port ${port}`,
     )
     yield* Effect.logDebug(`[Local] Handler: ${fn.localHandler}`)
@@ -807,7 +807,7 @@ const ensureWorkerStarted = (
     }
 
     // Worker doesn't exist - start it lazily
-    yield* Effect.logInfo(
+    yield* Effect.logDebug(
       `[Local] Starting Node.js worker for first invocation of ${fn.functionName}...`,
     )
 

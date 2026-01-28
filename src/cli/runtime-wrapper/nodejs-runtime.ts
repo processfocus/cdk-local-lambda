@@ -20,14 +20,14 @@ import type { Context } from "aws-lambda"
 // Runtime API base URL from environment
 const RUNTIME_API = process.env.AWS_LAMBDA_RUNTIME_API
 if (!RUNTIME_API) {
-  console.error("[Runtime] AWS_LAMBDA_RUNTIME_API not set")
+  console.error("AWS_LAMBDA_RUNTIME_API not set")
   process.exit(1)
 }
 
 // Handler path from environment (e.g., "functions/greeter/handler.handler")
 const HANDLER = process.env._HANDLER
 if (!HANDLER) {
-  console.error("[Runtime] _HANDLER not set")
+  console.error("_HANDLER not set")
   process.exit(1)
 }
 
@@ -35,6 +35,19 @@ if (!HANDLER) {
 const PROJECT_ROOT = process.env.LAMBDA_TASK_ROOT ?? process.cwd()
 
 const RUNTIME_API_BASE = `http://${RUNTIME_API}`
+
+// Current request ID for logging context (set during invocation)
+let currentRequestId: string | null = null
+
+/**
+ * Log an error in Lambda log format so it gets the proper invocation prefix.
+ * Format: TIMESTAMP\tREQUEST_ID\tLEVEL\tMESSAGE
+ */
+function lambdaError(level: string, message: string): void {
+  const timestamp = new Date().toISOString()
+  const requestId = currentRequestId ?? "00000000-0000-0000-0000-000000000000"
+  console.error(`${timestamp}\t${requestId}\t${level}\t${message}`)
+}
 
 /**
  * Parse handler path into module path and export name.
@@ -89,8 +102,6 @@ async function loadHandler(
       `Could not load handler module: "${modulePath}" (tried extensions: ${extensions.join(", ")})`,
     )
   }
-
-  console.log(`[Runtime] Loaded handler from: ${resolvedPath}`)
 
   const handler = loadedModule[exportName]
   if (typeof handler !== "function") {
@@ -182,7 +193,7 @@ async function postResponse(requestId: string, result: unknown): Promise<void> {
   )
 
   if (!response.ok) {
-    console.error(`[Runtime] Failed to post response: ${response.status}`)
+    lambdaError("ERROR", `Failed to post response: ${response.status}`)
   }
 }
 
@@ -209,7 +220,7 @@ async function postError(requestId: string, error: Error): Promise<void> {
   )
 
   if (!response.ok) {
-    console.error(`[Runtime] Failed to post error: ${response.status}`)
+    lambdaError("ERROR", `Failed to post error: ${response.status}`)
   }
 }
 
@@ -241,25 +252,18 @@ async function postInitError(error: Error): Promise<void> {
  * Main runtime loop.
  */
 async function main(): Promise<void> {
-  console.log(`[Runtime] Starting Node.js runtime wrapper`)
-  console.log(`[Runtime] Handler: ${HANDLER}`)
-  console.log(`[Runtime] Project root: ${PROJECT_ROOT}`)
-  console.log(`[Runtime] Runtime API: ${RUNTIME_API}`)
-
   // Load handler once at startup
   // Note: bun --watch automatically tracks dynamic imports and restarts when they change
   let handler: (event: unknown, context: Context) => Promise<unknown>
   try {
     handler = await loadHandler(HANDLER!, PROJECT_ROOT)
   } catch (error) {
-    console.error(`[Runtime] Failed to load handler: ${error}`)
+    console.error(`Failed to load handler: ${error}`)
     await postInitError(
       error instanceof Error ? error : new Error(String(error)),
     )
     process.exit(1)
   }
-
-  console.log("[Runtime] Handler loaded, starting invocation loop...")
 
   // Main invocation loop
   while (true) {
@@ -275,25 +279,26 @@ async function main(): Promise<void> {
       }
 
       const { event, context, requestId } = invocation
-      console.log(`[Runtime] Received invocation: ${requestId}`)
+      currentRequestId = requestId
 
       try {
         // Invoke handler
         const result = await handler(event, context)
-        console.log(`[Runtime] Handler completed: ${requestId}`)
 
         // Post response
         await postResponse(requestId, result)
       } catch (error) {
-        console.error(`[Runtime] Handler error: ${error}`)
+        lambdaError("ERROR", `Handler error: ${error}`)
         await postError(
           requestId,
           error instanceof Error ? error : new Error(String(error)),
         )
+      } finally {
+        currentRequestId = null
       }
     } catch (error) {
       // Error getting next invocation - this is fatal, exit and let daemon restart
-      console.error(`[Runtime] Fatal error in invocation loop: ${error}`)
+      console.error(`Fatal error in invocation loop: ${error}`)
       process.exit(1)
     }
   }
@@ -301,6 +306,6 @@ async function main(): Promise<void> {
 
 // Run the main loop
 main().catch((error) => {
-  console.error(`[Runtime] Unhandled error: ${error}`)
+  console.error(`Unhandled error: ${error}`)
   process.exit(1)
 })
