@@ -105,15 +105,25 @@ async function loadHandler(
 /**
  * Get next invocation from Runtime API.
  * This blocks until an invocation is available.
+ *
+ * Returns null if the server returned 503 (poll timeout), signaling we should retry.
+ * This is expected behavior - the server times out idle connections to work within
+ * HTTP server limitations, but native workers can just reconnect and keep polling.
  */
 async function getNextInvocation(): Promise<{
   event: unknown
   context: Context
   requestId: string
-}> {
+} | null> {
   const response = await fetch(
     `${RUNTIME_API_BASE}/2018-06-01/runtime/invocation/next`,
   )
+
+  // 503 means the server's poll timeout expired - this is expected behavior
+  // for idle connections. Native workers should just retry polling.
+  if (response.status === 503) {
+    return null
+  }
 
   if (!response.ok) {
     throw new Error(`Failed to get next invocation: ${response.status}`)
@@ -255,7 +265,16 @@ async function main(): Promise<void> {
   while (true) {
     try {
       // Get next invocation (blocks until available)
-      const { event, context, requestId } = await getNextInvocation()
+      const invocation = await getNextInvocation()
+
+      // null means 503 timeout - server wants us to reconnect and keep polling
+      if (invocation === null) {
+        // Small delay before reconnecting to avoid tight loop
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        continue
+      }
+
+      const { event, context, requestId } = invocation
       console.log(`[Runtime] Received invocation: ${requestId}`)
 
       try {
