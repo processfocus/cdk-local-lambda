@@ -116,6 +116,8 @@ interface FunctionContainer {
   >
   /** Fiber for the idle shutdown timer, cancelled when new responses arrive */
   idleTimerFiber: Fiber.RuntimeFiber<void, never> | null
+  /** Environment variables captured from first invocation */
+  env: Record<string, string>
 }
 
 /**
@@ -378,6 +380,7 @@ const startFunctionContainer = (
   fn: DiscoveredFunction,
   port: number,
   projectRoot: string,
+  additionalEnv: Record<string, string>,
   invocationContexts?: Map<string, { num: number }>,
 ): Effect.Effect<
   Fiber.RuntimeFiber<void, Error>,
@@ -427,6 +430,7 @@ const startFunctionContainer = (
       memoryMB: fn.memoryMB,
       timeoutSeconds: 3600, // Long timeout - container stays running
       platform,
+      additionalEnv,
       invocationContexts,
     })
 
@@ -607,16 +611,20 @@ const startNodejsWorker = (
       "nodejs-runtime.js",
     )
 
+    // Get absolute path to bun for pure env isolation (no PATH dependency)
+    const bunPath = Bun.which("bun")
+    if (!bunPath) {
+      return yield* Effect.fail(
+        new Error("Could not find 'bun' executable in PATH"),
+      )
+    }
+
     // Build environment for the worker process
-    // Use env from invocation (AWS credentials, user-defined vars) + local overrides
-    // We need PATH from local environment for the bun executable to be found
+    // Pure isolation: only env from bridge + local overrides, no local PATH/HOME
     const workerEnv: NodeJS.ProcessEnv = {
       // Start with env vars from the bridge Lambda (AWS credentials, user-defined vars)
       ...env,
-      // Local system vars needed for execution (PATH for finding bun, HOME for configs)
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      // Local overrides
+      // Local overrides (these are set by the daemon, not from bridge)
       AWS_LAMBDA_RUNTIME_API: `localhost:${port}`,
       _HANDLER: fn.localHandler,
       LAMBDA_TASK_ROOT: projectRoot,
@@ -631,7 +639,8 @@ const startNodejsWorker = (
 
     // Spawn Bun with --watch to automatically restart when handler files change
     // This enables hot-reload without needing to restart the daemon
-    const workerProcess = spawn("bun", ["--watch", runtimeWrapperPath], {
+    // Use absolute bun path for pure env isolation (no PATH dependency)
+    const workerProcess = spawn(bunPath, ["--watch", runtimeWrapperPath], {
       cwd: projectRoot,
       env: workerEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -857,10 +866,12 @@ const ensureWorkerStarted = (
 /**
  * Ensure a container is started for a function.
  * If the container already exists, return it.
+ * If the env vars have changed, restart the container.
  * Otherwise, create the Runtime API server, add to containers map, and start the container.
  */
 const ensureContainerStarted = (
   fn: DiscoveredFunction,
+  invocationEnv: Record<string, string>,
   containersRef: Ref.Ref<Map<string, FunctionContainer>>,
   serverScope: Scope.Scope,
   projectRoot: string,
@@ -874,7 +885,23 @@ const ensureContainerStarted = (
     const currentContainers = yield* Ref.get(containersRef)
     const existing = currentContainers.get(fn.functionName)
     if (existing) {
-      return existing
+      // Check if env vars have changed (e.g., after CDK redeploy)
+      const envChanged =
+        JSON.stringify(existing.env) !== JSON.stringify(invocationEnv)
+      if (envChanged) {
+        yield* Effect.logInfo(
+          `[Local] Environment changed for ${fn.functionName}, restarting container...`,
+        )
+        // Stop the existing container
+        yield* Fiber.interrupt(existing.containerFiber).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+        // Remove from map so we create a new one below
+        currentContainers.delete(fn.functionName)
+        yield* Ref.set(containersRef, currentContainers)
+      } else {
+        return existing
+      }
     }
 
     // Container doesn't exist - start it lazily
@@ -904,6 +931,7 @@ const ensureContainerStarted = (
       isRebuilding: false,
       pendingResponses: new Map(),
       idleTimerFiber: null,
+      env: invocationEnv,
     }
 
     // Add to map immediately to prevent race conditions
@@ -915,6 +943,7 @@ const ensureContainerStarted = (
       fn,
       port,
       projectRoot,
+      invocationEnv,
       invocationContexts,
     ).pipe(
       Effect.catchAll((error) =>
@@ -1088,8 +1117,10 @@ const handleDockerInvocation = (
 ): Effect.Effect<void, Error, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     // Ensure container is started (lazy startup on first invocation)
+    // Use env from invocation (captured from bridge Lambda on first invoke)
     const container = yield* ensureContainerStarted(
       fn,
+      invocation.env ?? {},
       containersRef,
       serverScope,
       projectRoot,

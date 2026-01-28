@@ -53,6 +53,21 @@ export interface InvocationMessage {
 }
 
 /**
+ * Environment variables that are set locally by the daemon.
+ * These override any values from the bridge Lambda and are excluded from forwarding.
+ * Note: AWS_LAMBDA_FUNCTION_MEMORY_SIZE is also set locally but isn't in EXCLUDED_ENV_VARS
+ * because it doesn't come from the bridge Lambda's process.env (it's in the context).
+ */
+export const LOCAL_OVERRIDE_ENV_VARS = new Set([
+  // Set by daemon to point to local Runtime API server
+  "AWS_LAMBDA_RUNTIME_API",
+  // Local handler path (different from deployed handler)
+  "_HANDLER",
+  // Local project root
+  "LAMBDA_TASK_ROOT",
+])
+
+/**
  * Environment variables to exclude when forwarding from Lambda.
  * These are either Lambda internals or should use local values instead.
  */
