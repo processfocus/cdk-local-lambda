@@ -118,7 +118,14 @@ export class LiveLambdaAspect implements cdk.IAspect {
       this.transformDockerFunction(fn, stackName, functionId)
     } else {
       // Get handler paths before we modify anything
-      const { originalHandler, localHandler } = this.getHandlerPaths(fn)
+      const handlerPaths = this.getHandlerPaths(fn)
+
+      // Skip unsupported functions (not NodejsFunction or DockerImageFunction)
+      if (!handlerPaths) {
+        return
+      }
+
+      const { originalHandler, localHandler } = handlerPaths
 
       // Transform the function
       this.transformFunction(
@@ -190,11 +197,12 @@ export class LiveLambdaAspect implements cdk.IAspect {
   /**
    * Get handler paths for a function.
    * Returns both the original handler (as set in CfnFunction) and the local handler path.
+   * Returns null if the function is not supported (e.g., not a NodejsFunction).
    */
   private getHandlerPaths(fn: lambda.Function): {
     originalHandler: string
     localHandler: string
-  } {
+  } | null {
     const cfnFunction = fn.node.defaultChild as lambda.CfnFunction
     const originalHandler = cfnFunction.handler || "index.handler"
     const constructId = fn.node.id
@@ -212,13 +220,12 @@ export class LiveLambdaAspect implements cdk.IAspect {
       return { originalHandler, localHandler }
     }
 
-    // No handler path found - fail with helpful error
-    throw new Error(
-      `[LiveLambda] No local handler path for "${constructId}". ` +
-        `This function was not created with NodejsFunction, or the bootstrap hook was not installed early enough. ` +
-        `Fix: import "local-live-lambda/bootstrap" before any CDK imports (Node.js), ` +
-        `or run Bun with "bun --preload local-live-lambda/bootstrap".`,
+    // No handler path found - this function is not supported (not a NodejsFunction or DockerImageFunction)
+    console.log(
+      `[LiveLambda] Skipping unsupported function "${constructId}": ` +
+        `not a NodejsFunction or DockerImageFunction (or bootstrap hook was not installed early enough)`,
     )
+    return null
   }
 
   /**
