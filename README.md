@@ -51,6 +51,8 @@ const app = new cdk.App()
 const stack = new MyStack(app, "MyStack")
 
 applyLiveLambdaAspect(app)
+
+app.synth()
 ```
 
 ### 3. Start the local daemon
