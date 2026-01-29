@@ -1,5 +1,5 @@
 {
-  "app": "npx tsx bin/app.ts",
+  "app": "bun --preload local-live-lambda/bootstrap bin/app.ts",
   "watch": {
     "include": ["**"],
     "exclude": [

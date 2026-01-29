@@ -7,15 +7,17 @@
  * - isLiveModeEnabled: Check if live mode is enabled
  * - CdkLocalLambdaBootstrapStack: The bootstrap stack for shared infrastructure
  *
- * For Docker function support, you must use a direct static import of the
- * bootstrap file BEFORE any CDK imports in your app entry point:
+ * For Docker function support, you must install the bootstrap BEFORE any CDK
+ * imports in your app entry point:
  *
  * ```typescript
  * import "local-live-lambda/bootstrap"
  * import * as cdk from "aws-cdk-lib"
  * ```
  *
- * This ensures the hook is installed synchronously before CDK modules load.
+ * Node.js: this is sufficient.
+ * Bun: use `bun --preload local-live-lambda/bootstrap` (static ESM imports are
+ * linked before this module runs).
  */
 
 // Re-export the aspect and helpers

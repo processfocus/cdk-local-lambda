@@ -49,13 +49,6 @@ export interface LiveLambdaAspectProps {
    * Optional: Function construct IDs to exclude from transformation.
    */
   excludeFunctions?: string[]
-
-  /**
-   * Optional: Explicit mapping of function construct IDs to their local handler paths.
-   * Use this when the automatic detection doesn't work or you need custom paths.
-   * Example: { "MyFunction": "src/functions/my-function/index.handler" }
-   */
-  handlerMappings?: Record<string, string>
 }
 
 /**
@@ -206,16 +199,7 @@ export class LiveLambdaAspect implements cdk.IAspect {
     const originalHandler = cfnFunction.handler || "index.handler"
     const constructId = fn.node.id
 
-    // 1. Check if the user provided an explicit handler mapping in the aspect props
-    if (this.props.handlerMappings?.[constructId]) {
-      const localHandler = this.props.handlerMappings[constructId]
-      console.log(
-        `[LiveLambda] Using handlerMappings for ${constructId}: ${localHandler}`,
-      )
-      return { originalHandler, localHandler }
-    }
-
-    // 2. Check if captured by the NodejsFunction hook
+    // Check if captured by the NodejsFunction hook
     const entryPath = getEntryPath(fn)
     const handlerName = getHandlerName(fn) || "handler"
     if (entryPath) {
@@ -231,9 +215,9 @@ export class LiveLambdaAspect implements cdk.IAspect {
     // No handler path found - fail with helpful error
     throw new Error(
       `[LiveLambda] No local handler path for "${constructId}". ` +
-        `This function was not created with NodejsFunction, or the hook was not installed. ` +
-        `Either use NodejsFunction with an explicit 'entry' prop, ` +
-        `or pass handlerMappings to applyLiveLambdaAspect().`,
+        `This function was not created with NodejsFunction, or the bootstrap hook was not installed early enough. ` +
+        `Fix: import "local-live-lambda/bootstrap" before any CDK imports (Node.js), ` +
+        `or run Bun with "bun --preload local-live-lambda/bootstrap".`,
     )
   }
 
@@ -252,9 +236,11 @@ export class LiveLambdaAspect implements cdk.IAspect {
     // Get the docker context path from the hook
     const dockerContextPath = getDockerContextPath(fn)
     if (!dockerContextPath) {
-      console.warn(
-        `[LiveLambda] Warning: Could not get docker context for ${functionId}. ` +
-          `The function will be transformed but daemon may not be able to run it locally.`,
+      throw new Error(
+        `[LiveLambda] No docker context path for "${functionId}". ` +
+          `The bootstrap hook was not installed early enough. ` +
+          `Fix: import "local-live-lambda/bootstrap" before any CDK imports (Node.js), ` +
+          `or run Bun with "bun --preload local-live-lambda/bootstrap".`,
       )
     }
 
@@ -281,9 +267,7 @@ export class LiveLambdaAspect implements cdk.IAspect {
 
     // Add tag with docker context path for daemon discovery
     // The daemon uses this tag to build and run the container locally
-    if (dockerContextPath) {
-      cfnFunction.tags.setTag(LIVE_LAMBDA_DOCKER_TAG, dockerContextPath)
-    }
+    cfnFunction.tags.setTag(LIVE_LAMBDA_DOCKER_TAG, dockerContextPath)
 
     // Grant permissions to publish/subscribe to AppSync Events
     fn.addToRolePolicy(

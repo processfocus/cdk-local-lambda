@@ -3,9 +3,11 @@
  * BEFORE any CDK imports.
  *
  * This must be imported as the very first thing in the CDK app entry point,
- * before any other imports. It patches Module._load to intercept when
- * aws-cdk-lib modules are loaded, wrapping constructors to capture props
- * on each instance.
+ * before any other imports.
+ *
+ * Runtime support:
+ * - Node.js: patches Module._load to intercept module loading
+ * - Bun: directly imports and patches modules (Module._load not supported)
  *
  * Hooks installed:
  * - NodejsFunction: captures entry and handler props
@@ -15,7 +17,22 @@
 
 import { createRequire } from "node:module"
 
-const require = createRequire(import.meta.url)
+const requireFromPackage = createRequire(import.meta.url)
+
+// Prefer resolving dependencies from the *CDK app project* (process.cwd()).
+// This avoids patching a nested aws-cdk-lib copy when local-live-lambda is
+// installed with its own node_modules (common with package managers).
+let requireFromProject = requireFromPackage
+try {
+  requireFromProject = createRequire(`${process.cwd()}/package.json`)
+} catch {
+  // Fall back to resolving relative to this package.
+}
+
+/**
+ * Detect if we're running in Bun runtime
+ */
+const isBun = typeof process.versions.bun !== "undefined"
 
 // Symbols for NodejsFunction
 const ENTRY_SYMBOL = Symbol.for("live-lambda:entry")
@@ -139,35 +156,96 @@ interface DockerImageAssetProps {
   [key: string]: unknown
 }
 
-// Install the Module._load hook immediately
-const Module = require("node:module")
-const originalLoad: (
-  request: string,
-  parent: NodeModule | undefined,
-  isMain: boolean,
-) => unknown = Module._load
+// Cache the lambda module for creating dummy code
+let cachedLambdaModule: LambdaModule | null = null
 
-Module._load = function (
-  request: string,
-  parent: NodeModule | undefined,
-  isMain: boolean,
-): unknown {
-  // Call original load - let errors propagate naturally
-  const result = originalLoad.call(this, request, parent, isMain)
+/**
+ * Install hooks based on runtime environment.
+ *
+ * Bun notes:
+ * - Bun creates a *snapshot* of CommonJS named exports when importing from ESM.
+ *   This means that mutating/replacing `module.exports.Foo` AFTER the ESM import
+ *   was linked will not affect `import { Foo } from "..."` in the current process.
+ * - Therefore, Bun patching only works reliably when this bootstrap runs before
+ *   the app entry point is loaded, e.g. via `bun --preload local-live-lambda/bootstrap`.
+ *
+ * Node.js:
+ * - We can patch Module._load to intercept module loading.
+ */
+if (isBun) {
+  const isLiveMode = process.env.CDK_LIVE === "true"
 
-  // Check if this is the lambda-nodejs module
-  if (isLambdaNodejsModule(request)) {
-    patchNodejsFunction(result as LambdaNodejsModule | null)
+  // Best-effort patching for Bun. This is only guaranteed to work when this file
+  // is preloaded (see note above). Even then, we keep this logic lightweight.
+  if (isLiveMode) {
+    const hasPreloadFlag = process.execArgv.includes("--preload")
+
+    if (!hasPreloadFlag) {
+      console.warn(
+        "[LiveLambda] Warning: Running in Bun without --preload. Automatic handler/docker detection is likely disabled.",
+      )
+      console.warn(
+        "[LiveLambda] Fix: run Bun with `--preload local-live-lambda/bootstrap`.",
+      )
+    }
+
+    try {
+      // Patch aws-lambda first so NodejsFunction can create dummy Code.fromInline
+      // when CDK_LIVE=true (skips bundling).
+      const lambdaModule = requireFromProject(
+        "aws-cdk-lib/aws-lambda",
+      ) as LambdaModule
+      cachedLambdaModule = lambdaModule
+      patchDockerImageFunction(lambdaModule)
+
+      const nodejsModule = requireFromProject(
+        "aws-cdk-lib/aws-lambda-nodejs",
+      ) as LambdaNodejsModule
+      patchNodejsFunction(nodejsModule)
+    } catch (err) {
+      console.warn(
+        "[LiveLambda] Warning: Failed to install Bun patches:",
+        (err as Error).message,
+      )
+      console.warn(
+        "[LiveLambda] Automatic handler/docker detection is required; ensure bootstrap is preloaded.",
+      )
+      console.warn(
+        "[LiveLambda] See: https://github.com/berenddeboer/cdk-local-lambda#bun-support",
+      )
+    }
   }
+} else {
+  // Node.js: use Module._load hook to intercept module loading
+  const Module = requireFromPackage("node:module")
+  const originalLoad: (
+    request: string,
+    parent: NodeModule | undefined,
+    isMain: boolean,
+  ) => unknown = Module._load
 
-  // Check if this is the lambda module (for DockerImageFunction and Code.fromInline)
-  if (isLambdaModule(request)) {
-    // Cache the lambda module so we can use Code.fromInline in NodejsFunction patch
-    cachedLambdaModule = result as LambdaModule | null
-    patchDockerImageFunction(result as LambdaModule | null)
+  Module._load = function (
+    request: string,
+    parent: NodeModule | undefined,
+    isMain: boolean,
+  ): unknown {
+    // Call original load - let errors propagate naturally
+    const result = originalLoad.call(this, request, parent, isMain)
+
+    // Check if this is the lambda-nodejs module
+    if (isLambdaNodejsModule(request)) {
+      patchNodejsFunction(result as LambdaNodejsModule | null)
+    }
+
+    // Check if this is the lambda module (for DockerImageFunction and Code.fromInline)
+    if (isLambdaModule(request)) {
+      // Cache the lambda module so we can use Code.fromInline in NodejsFunction patch
+      cachedLambdaModule = result as LambdaModule | null
+      patchDockerImageFunction(result as LambdaModule | null)
+    }
+
+    return result
   }
-
-  return result
 }
 
 /**
@@ -187,9 +265,6 @@ function createDummyCode(lambdaModule: LambdaModule): unknown {
   }
   return undefined
 }
-
-// Cache the lambda module for creating dummy code
-let cachedLambdaModule: LambdaModule | null = null
 
 /**
  * Patch NodejsFunction to capture entry and handler props

@@ -7,11 +7,17 @@
  *
  * IMPORTANT: The bootstrap import MUST be first, before any CDK imports!
  * This installs hooks to capture DockerImageFunction context paths.
+ *
+ * NOTE: When running under Bun, automatic capture requires preloading the
+ * bootstrap (Bun snapshots CJS named exports during static ESM import linking).
+ * Use: `CDK_LIVE=true bun --preload local-live-lambda/bootstrap bin/app.ts`
+ * If you can't use preload, live debugging won't work.
  */
 
 // Install the hook FIRST - before any CDK imports
 // This patches Module._load to intercept aws-cdk-lib/aws-lambda and aws-lambda-nodejs
-import "local-live-lambda/lib/aspect/live-lambda-bootstrap.js"
+// Note: In Bun, this only works reliably when preloaded (see note above).
+import "local-live-lambda/bootstrap"
 
 import * as cdk from "aws-cdk-lib"
 import { applyLiveLambdaAspect } from "local-live-lambda"
@@ -27,7 +33,7 @@ new CompleteStack(app, "CompleteExampleStack", {
 })
 
 // Apply LiveLambdaAspect when CDK_LIVE=true
-// This transforms all Lambda functions to use the bridge handler
-applyLiveLambdaAspect(app)
+// This transforms all supported Lambda functions to use the bridge handler.
+applyLiveLambdaAspect(app, {})
 
 app.synth()
