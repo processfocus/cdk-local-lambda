@@ -491,9 +491,10 @@ const resetIdleTimer = (
           `[Local] Stopping idle container ${container.fn.functionName} (will restart on next invocation)`,
         )
 
-        // Stop the container using Docker
+        // Stop the container using Docker with fast timeout (1s)
+        // The container may be blocked on long-polling, so we need to force kill
         const docker = yield* Docker
-        yield* docker.stop(container.containerName).pipe(
+        yield* docker.stop(container.containerName, 1).pipe(
           Effect.scoped,
           Effect.catchAll(() => Effect.void),
         )
@@ -889,16 +890,70 @@ const ensureContainerStarted = (
       const envChanged =
         JSON.stringify(existing.env) !== JSON.stringify(invocationEnv)
       if (envChanged) {
+        // IMPORTANT: Update env immediately (before any yields) to prevent
+        // other concurrent invocations from also detecting the change and
+        // triggering duplicate restarts
+        existing.env = invocationEnv
+
+        // If already restarting for env change, just return the existing container
+        // The invocation will be queued and picked up by the new container
+        if (existing.isRebuilding) {
+          yield* Effect.logDebug(
+            `[Local] Environment change restart already in progress for ${fn.functionName}, queueing invocation`,
+          )
+          return existing
+        }
+
         yield* Effect.logInfo(
           `[Local] Environment changed for ${fn.functionName}, restarting container...`,
         )
-        // Stop the existing container
+        existing.isRebuilding = true
+
+        // Stop the Docker container forcefully (timeout=1s)
+        // This sends SIGTERM and then SIGKILL after 1 second
+        // We must do this BEFORE interrupting the fiber, because the fiber is
+        // blocked waiting for the docker process to exit
+        yield* Effect.gen(function* () {
+          const docker = yield* Docker
+          yield* docker.stop(existing.containerName, 1).pipe(Effect.scoped)
+        }).pipe(
+          Effect.provide(DockerLive),
+          Effect.catchAll((error) =>
+            Effect.logDebug(
+              `[Local] Error stopping container (may already be stopped): ${error}`,
+            ),
+          ),
+        )
+
+        // Now interrupt the fiber (it should complete quickly since container stopped)
         yield* Fiber.interrupt(existing.containerFiber).pipe(
           Effect.catchAll(() => Effect.void),
         )
-        // Remove from map so we create a new one below
-        currentContainers.delete(fn.functionName)
-        yield* Ref.set(containersRef, currentContainers)
+
+        // Restart the container with new environment, reusing existing RuntimeAPI
+        const newFiber = yield* startFunctionContainer(
+          fn,
+          existing.port,
+          projectRoot,
+          invocationEnv,
+          invocationContexts,
+        ).pipe(
+          Effect.catchAll((error) =>
+            Effect.gen(function* () {
+              yield* Effect.logError(
+                `[Local] Failed to restart container for ${fn.functionName}: ${error}`,
+              )
+              existing.isRebuilding = false
+              return yield* Effect.fail(error)
+            }),
+          ),
+        )
+
+        // Update container with new fiber
+        existing.containerFiber = newFiber
+        existing.isRebuilding = false
+
+        return existing
       } else {
         return existing
       }

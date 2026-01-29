@@ -37,6 +37,8 @@ export async function handler(
   const { a, b } = event
   const result = a + b
 
+  console.debug("ENV", process.env["TEST"])
+
   const response: AdderResponse = {
     result,
     input: { a, b },

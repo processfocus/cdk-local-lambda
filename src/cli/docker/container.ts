@@ -172,9 +172,12 @@ export interface DockerService {
   /**
    * Stop Docker containers matching a name filter.
    * Returns the number of containers stopped.
+   * @param containerNameFilter - Filter to match container names
+   * @param timeoutSeconds - Seconds to wait before SIGKILL (default: 10)
    */
   readonly stop: (
     containerNameFilter: string,
+    timeoutSeconds?: number,
   ) => Effect.Effect<
     number,
     Error,
@@ -495,7 +498,7 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
         return containerIds
       })
 
-    const stop: DockerService["stop"] = (containerNameFilter) =>
+    const stop: DockerService["stop"] = (containerNameFilter, timeoutSeconds) =>
       Effect.gen(function* () {
         // First list matching containers
         const containerIds = yield* list(containerNameFilter)
@@ -509,10 +512,14 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
 
         yield* Effect.logInfo(`Stopping containers: ${containerIds.join(", ")}`)
 
-        // Stop all matching containers
+        // Build stop command with optional timeout
+        // -t 0 sends SIGKILL immediately, useful for fast restarts
+        const timeoutArg =
+          timeoutSeconds !== undefined ? ["-t", String(timeoutSeconds)] : []
         const command = PlatformCommand.make(
           runtime.dockerPath,
           "stop",
+          ...timeoutArg,
           ...containerIds,
         )
 

@@ -65,6 +65,9 @@ export class CompleteStack extends cdk.Stack {
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
       description: "Docker adder function - adds two numbers",
+      environment: {
+        "TEST": "12345"
+      },
     })
 
     // TypeScript function: greeter (ARM64)
