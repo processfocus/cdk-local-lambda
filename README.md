@@ -5,53 +5,44 @@ CLI and CDK Aspect to deploy a CDK stack with Lambda functions running locally.
 ## Installation
 
 ```bash
-bun install local-live-lambda
+npm install local-live-lambda
 ```
 
 ## Usage
 
-### 1. Bootstrap the infrastructure
-
-First, deploy the bootstrap stack which creates the shared AppSync Events API:
-
-```bash
-# Using default AWS profile and region
-bun src/cli/index.ts bootstrap
-
-# With specific profile and region
-bun src/cli/index.ts bootstrap --profile my-profile --region us-west-2
-```
-
-Or if installed globally:
-
-```bash
-local-lambda bootstrap --profile my-profile --region us-west-2
-```
-
-### 2. Add the aspect to your CDK app
+### 1. Add the aspect to your CDK app
 
 In your CDK app entry point (e.g., `bin/app.ts`):
 
 ```typescript
-import "local-live-lambda/aspect/live-lambda-bootstrap" // Must be first import!
+import "local-live-lambda/bootstrap" // Must be first import!
 import * as cdk from "aws-cdk-lib"
 import { applyLiveLambdaAspect } from "local-live-lambda"
 
 const app = new cdk.App()
 const stack = new MyStack(app, "MyStack")
 
-// Apply the aspect when CDK_LIVE=true
 applyLiveLambdaAspect(app)
 ```
 
-### 3. Deploy with live mode enabled
+### 2. Start the local daemon
+
+The daemon deploys your stack with live mode enabled and runs your Lambda functions locally:
 
 ```bash
-CDK_LIVE=true cdk deploy
+npx local-lambda local --stacks MyStack
 ```
 
-### 4. Start the local daemon (coming soon)
+Use `--profile` and `--region` to specify AWS credentials:
 
 ```bash
-local-lambda daemon
+npx local-lambda local --stacks MyStack --profile my-profile --region us-west-2
+```
+
+### Manual bootstrap (optional)
+
+If you prefer to deploy the bootstrap stack separately:
+
+```bash
+npx local-lambda bootstrap --profile my-profile --region us-west-2
 ```

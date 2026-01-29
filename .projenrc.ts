@@ -1,12 +1,25 @@
 import { javascript, typescript } from "projen"
 
 const project = new typescript.TypeScriptProject({
-  defaultReleaseBranch: "main",
+  defaultReleaseBranch: "trunk",
   name: "local-live-lambda",
   packageManager: javascript.NodePackageManager.BUN,
   projenrcTs: true,
   eslint: false,
   jest: false, // Use Bun's built-in test runner instead
+
+  // Package metadata
+  description:
+    "CLI and CDK Aspect for running Lambda functions locally via AppSync Events WebSocket relay",
+  repository: "https://github.com/berenddeboer/cdk-local-lambda.git",
+  homepage: "https://github.com/berenddeboer/cdk-local-lambda#readme",
+  authorName: "Berend de Boer",
+  bugsUrl: "https://github.com/berenddeboer/cdk-local-lambda/issues",
+
+  // Enable npm publishing with trusted publishing (OIDC)
+  releaseToNpm: true,
+  npmAccess: javascript.NpmAccess.PUBLIC,
+  npmProvenance: true,
 
   // Enable ESM package type
   entrypoint: "lib/index.js",
@@ -105,5 +118,33 @@ project.github
     "jobs.validate.steps.0.with.types",
     "feat\nfix\nchore\nrefactor\ntest\nvendor",
   )
+
+// Add keywords for npm discoverability
+project.addKeywords(
+  "aws",
+  "lambda",
+  "cdk",
+  "local-development",
+  "serverless",
+  "appsync",
+  "docker",
+  "typescript",
+)
+
+// Specify files to include in npm package
+project.package.addField("files", ["lib", "LICENSE", "README.md"])
+
+// Add exports field for clean subpath imports
+project.package.addField("exports", {
+  ".": {
+    types: "./lib/index.d.ts",
+    import: "./lib/index.js",
+  },
+  "./bootstrap": {
+    types: "./lib/aspect/live-lambda-bootstrap.d.ts",
+    import: "./lib/aspect/live-lambda-bootstrap.js",
+  },
+  "./package.json": "./package.json",
+})
 
 project.synth()

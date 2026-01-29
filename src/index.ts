@@ -11,7 +11,7 @@
  * bootstrap file BEFORE any CDK imports in your app entry point:
  *
  * ```typescript
- * import "local-live-lambda/lib/aspect/live-lambda-bootstrap.js"
+ * import "local-live-lambda/bootstrap"
  * import * as cdk from "aws-cdk-lib"
  * ```
  *
