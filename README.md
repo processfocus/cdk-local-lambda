@@ -80,3 +80,9 @@ If you prefer to deploy the bootstrap stack separately:
 ```bash
 npx local-lambda bootstrap --profile my-profile --region us-west-2
 ```
+
+## Common issues
+
+1. You see: "No functions found with live-lambda tags yet. Have you patched your CDK project (bootstrap) and added the LiveLambdaAspect?"
+
+Make sure your CDK app loads `local-live-lambda/bootstrap` (Bun: use `--preload local-live-lambda/bootstrap`) and that you call `applyLiveLambdaAspect(app)` in your app entry point.

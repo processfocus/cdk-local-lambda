@@ -1643,7 +1643,7 @@ export const localCommand = Command.make(
 
         if (functions.length === 0) {
           yield* Effect.logInfo(
-            "[Local] No functions found with live-lambda tags yet.",
+            "[Local] No functions found with live-lambda tags yet. Have you patched your CDK project (bootstrap) and added the LiveLambdaAspect?",
           )
           return
         }
