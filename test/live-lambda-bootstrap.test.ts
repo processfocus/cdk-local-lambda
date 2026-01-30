@@ -40,7 +40,7 @@ describe("live-lambda-bootstrap", () => {
   })
 
   afterEach(() => {
-    delete process.env.CDK_LIVE
+    delete process.env.CDK_LOCAL_LAMBDA
   })
 
   describe("NodejsFunction hook", () => {
@@ -149,7 +149,7 @@ console.log(String(fn[Symbol.for('live-lambda:entry')]) + '|' + String(fn[Symbol
         {
           env: {
             ...process.env,
-            CDK_LIVE: "true",
+            CDK_LOCAL_LAMBDA: "true",
           },
         },
       )

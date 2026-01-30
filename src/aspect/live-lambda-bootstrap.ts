@@ -173,7 +173,7 @@ let cachedLambdaModule: LambdaModule | null = null
  * - We can patch Module._load to intercept module loading.
  */
 if (isBun) {
-  const isLiveMode = process.env.CDK_LIVE === "true"
+  const isLiveMode = process.env.CDK_LOCAL_LAMBDA === "true"
 
   // Best-effort patching for Bun. This is only guaranteed to work when this file
   // is preloaded (see note above). Even then, we keep this logic lightweight.
@@ -191,7 +191,7 @@ if (isBun) {
 
     try {
       // Patch aws-lambda first so NodejsFunction can create dummy Code.fromInline
-      // when CDK_LIVE=true (skips bundling).
+      // when CDK_LOCAL_LAMBDA=true (skips bundling).
       const lambdaModule = requireFromProject(
         "aws-cdk-lib/aws-lambda",
       ) as LambdaModule
@@ -250,7 +250,7 @@ if (isBun) {
 
 /**
  * Create a dummy inline code that does nothing.
- * Used to skip bundling when CDK_LIVE=true.
+ * Used to skip bundling when CDK_LOCAL_LAMBDA=true.
  */
 function createDummyCode(lambdaModule: LambdaModule): unknown {
   // Access lambda.Code.fromInline to create a no-op code
@@ -278,7 +278,7 @@ function patchNodejsFunction(module: LambdaNodejsModule | null): void {
   // Check if we can patch
   if (module?.NodejsFunction) {
     const OriginalNodejsFunction = module.NodejsFunction
-    const isLiveMode = process.env.CDK_LIVE === "true"
+    const isLiveMode = process.env.CDK_LOCAL_LAMBDA === "true"
 
     // Create wrapper class that captures entry/handler props
     class NodejsFunctionWithCapture extends OriginalNodejsFunction {

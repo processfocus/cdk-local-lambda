@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { isLiveModeEnabled, LiveLambdaAspect } from "../src"
 
-test("isLiveModeEnabled returns false when CDK_LIVE is not set", () => {
-  delete process.env.CDK_LIVE
+test("isLiveModeEnabled returns false when CDK_LOCAL_LAMBDA is not set", () => {
+  delete process.env.CDK_LOCAL_LAMBDA
   expect(isLiveModeEnabled()).toBe(false)
 })
 
-test("isLiveModeEnabled returns true when CDK_LIVE is true", () => {
-  process.env.CDK_LIVE = "true"
+test("isLiveModeEnabled returns true when CDK_LOCAL_LAMBDA is true", () => {
+  process.env.CDK_LOCAL_LAMBDA = "true"
   expect(isLiveModeEnabled()).toBe(true)
-  delete process.env.CDK_LIVE
+  delete process.env.CDK_LOCAL_LAMBDA
 })
 
 test("LiveLambdaAspect can be instantiated", () => {
