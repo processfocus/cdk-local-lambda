@@ -20,6 +20,8 @@ const project = new typescript.TypeScriptProject({
   releaseToNpm: true,
   npmAccess: javascript.NpmAccess.PUBLIC,
   npmProvenance: true,
+  workflowNodeVersion: "24.x",
+  npmTrustedPublishing: true,
 
   // Enable ESM package type
   entrypoint: "lib/index.js",
