@@ -75,8 +75,8 @@ const project = new typescript.TypeScriptProject({
     "husky",
   ],
 
-  // Use bun to run projenrc for ESM compatibility
-  projenCommand: "bun .projenrc.ts",
+  // Use bunx projen for task execution (bun .projenrc.ts doesn't support task args)
+  projenCommand: "bunx projen",
 })
 
 // Add Biome for linting and formatting
