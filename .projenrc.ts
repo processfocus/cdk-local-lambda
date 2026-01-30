@@ -92,11 +92,15 @@ project.addTask("lint:fix", {
   exec: "biome check --write .",
 })
 
-// Override test task to use Bun's test runner
-project.testTask.reset("bun test")
+// Override test task to use Bun's test runner (unit tests only)
+project.testTask.reset("bun test ./test/*.test.ts ./test/shared/*.test.ts")
 project.addTask("test:watch", {
-  description: "Run tests in watch mode",
-  exec: "bun test --watch",
+  description: "Run unit tests in watch mode",
+  exec: "bun test --watch ./test/*.test.ts ./test/shared/*.test.ts",
+})
+project.addTask("test:integration", {
+  description: "Run integration tests (requires deployed stack)",
+  exec: "bun test ./test/integration/*.test.ts",
 })
 
 // Add bin entry for CLI
