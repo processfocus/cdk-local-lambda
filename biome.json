@@ -10,6 +10,7 @@
     "includes": [
       "**",
       "!src/out-tsc",
+      "!out-tsc",
       "!.projen",
       "!cdk.context.json",
       "!cdk.out",
@@ -31,6 +32,20 @@
       "quoteProperties": "asNeeded",
       "bracketSpacing": true,
       "arrowParentheses": "always"
+    }
+  },
+  "linter": {
+    "rules": {
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "suspicious": {
+        "noConfusingVoidType": "error"
+      }
     }
   },
   "overrides": [

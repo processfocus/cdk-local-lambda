@@ -19,7 +19,7 @@ import {
   it,
   setDefaultTimeout,
 } from "bun:test"
-import { Effect, Exit, Fiber, Ref, Scope } from "effect"
+import { Effect, Exit, Scope } from "effect"
 import {
   queueInvocation,
   type RuntimeApiState,

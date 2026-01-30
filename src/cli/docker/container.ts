@@ -665,11 +665,11 @@ export const makeLambdaContainerConfig = (options: {
   functionVersion: string
   memoryMB: number
   timeoutSeconds: number
-  handler?: string
-  awsRegion?: string
-  platform?: string
-  additionalEnv?: Record<string, string>
-  invocationContexts?: Map<string, { num: number }>
+  handler?: string | undefined
+  awsRegion?: string | undefined
+  platform?: string | undefined
+  additionalEnv?: Record<string, string> | undefined
+  invocationContexts?: Map<string, { num: number }> | undefined
 }): DockerRunConfig => ({
   imageUri: options.imageUri,
   containerName: `lambda-${options.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`,

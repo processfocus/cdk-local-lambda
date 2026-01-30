@@ -187,7 +187,10 @@ const checkBootstrapVersion = (qualifier: string) =>
 /**
  * Run the bootstrap stack deployment.
  */
-const runBootstrap = (options: { profile?: string; region?: string }) =>
+const runBootstrap = (options: {
+  profile?: string | undefined
+  region?: string | undefined
+}) =>
   Effect.gen(function* () {
     yield* Effect.logInfo("Running bootstrap stack deployment...")
 
@@ -254,8 +257,8 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
  */
 const ensureBootstrap = (options: {
   qualifier: string
-  profile?: string
-  region?: string
+  profile?: string | undefined
+  region?: string | undefined
 }) =>
   Effect.gen(function* () {
     yield* Effect.logDebug("[Local] Checking bootstrap stack version...")
@@ -453,11 +456,9 @@ const startFunctionContainer = (
 
     // Use Effect.forkDaemon to run the container independently with context preserved
     // Effect.scoped provides the scope needed by docker.run
-    const fiber = yield* docker.run(containerConfig).pipe(
-      Effect.scoped,
-      Effect.map(() => undefined as void),
-      Effect.forkDaemon,
-    )
+    const fiber = yield* docker
+      .run(containerConfig)
+      .pipe(Effect.scoped, Effect.ignore, Effect.forkDaemon)
 
     return fiber
   }).pipe(Effect.provide(DockerLive))
@@ -1237,7 +1238,7 @@ const rebuildDockerContainer = (
           }
         }),
       ),
-      Effect.map(() => undefined as void),
+      Effect.ignore,
       Effect.catchAll((error) =>
         Effect.logError(`Container error for ${functionId}: ${error}`),
       ),
@@ -1415,10 +1416,10 @@ type CdkWatchEvent =
  */
 const startCdkWatch = (
   options: {
-    profile?: string
-    region?: string
-    stacks?: string[]
-    all?: boolean
+    profile?: string | undefined
+    region?: string | undefined
+    stacks?: string[] | undefined
+    all?: boolean | undefined
   },
   scope: Scope.Scope,
 ): Effect.Effect<
@@ -1472,7 +1473,6 @@ const startCdkWatch = (
     // State tracking for deploy status messages
     let isDeploying = false
     let isFirstDeploy = true
-    let outputBuffer = ""
     const discoveredStacks = new Set<string>()
 
     // Patterns to detect CDK watch behavior
@@ -1492,8 +1492,6 @@ const startCdkWatch = (
     yield* outputStream.pipe(
       Stream.runForEach((line) =>
         Effect.gen(function* () {
-          outputBuffer += line + "\n"
-
           // Log all output at debug level
           yield* Effect.logDebug(`[CDK] ${line}`)
 
@@ -1520,14 +1518,13 @@ const startCdkWatch = (
 
           // Detect errors - output immediately
           if (errorPattern.test(line)) {
-            yield* Effect.sync(() => process.stderr.write(line + "\n"))
+            yield* Effect.sync(() => process.stderr.write(`${line}\n`))
           }
 
           // Check for deploy completion (only trigger once per deploy cycle)
           if (isDeploying && deployCompletePattern.test(line)) {
             isDeploying = false
             isFirstDeploy = false
-            outputBuffer = ""
             yield* Effect.logInfo("[CDK] Deploy complete")
             // Small delay to ensure AWS has propagated the changes
             yield* Effect.sleep("1 second")
@@ -1537,7 +1534,6 @@ const startCdkWatch = (
           // Check for no changes
           if (noChangesPattern.test(line)) {
             isDeploying = false
-            outputBuffer = ""
           }
         }),
       ),
@@ -1663,8 +1659,8 @@ export const localCommand = Command.make(
       // Bootstrap check must complete first
       yield* ensureBootstrap({
         qualifier,
-        profile: profileValue,
-        region: regionValue,
+        ...(profileValue !== undefined && { profile: profileValue }),
+        ...(regionValue !== undefined && { region: regionValue }),
       })
 
       // Stack filter - populated from CDK watch output, used to filter Lambda discovery

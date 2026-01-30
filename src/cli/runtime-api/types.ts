@@ -52,7 +52,7 @@ export interface LambdaError {
   /** Error message */
   errorMessage: string
   /** Stack trace lines */
-  stackTrace?: string[]
+  stackTrace?: string[] | undefined
 }
 
 /**
@@ -64,7 +64,7 @@ export interface LambdaInitError {
   /** Error message */
   errorMessage: string
   /** Stack trace lines */
-  stackTrace?: string[]
+  stackTrace?: string[] | undefined
 }
 
 /**
