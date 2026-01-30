@@ -52,6 +52,7 @@ import {
 } from "../../shared/types.js"
 import { makeAppSyncClient } from "../appsync/client.js"
 import {
+  buildExtensionWrapperCommand,
   Docker,
   DockerLive,
   makeLambdaContainerConfig,
@@ -61,6 +62,7 @@ import {
   watchDockerContexts,
 } from "../docker/watcher.js"
 import {
+  notifyExtensionsInvoke,
   queueInvocation,
   type RuntimeApiState,
   startRuntimeApiServer,
@@ -421,6 +423,13 @@ const startFunctionContainer = (
       })
       .pipe(Effect.scoped)
 
+    // Inspect the image to get original entrypoint/cmd for extension wrapper
+    const imageConfig = yield* docker.inspect(imageName).pipe(Effect.scoped)
+    const extensionWrapper = buildExtensionWrapperCommand(
+      imageConfig.entrypoint,
+      imageConfig.cmd,
+    )
+
     const containerConfig = makeLambdaContainerConfig({
       imageUri: imageName,
       runtimeApiHost,
@@ -433,6 +442,10 @@ const startFunctionContainer = (
       additionalEnv,
       invocationContexts,
     })
+
+    // Apply extension wrapper to start extensions before the app
+    containerConfig.entrypoint = extensionWrapper.entrypoint
+    containerConfig.command = extensionWrapper.command
 
     yield* Effect.logInfo(
       `Starting container for ${fn.functionName} on port ${port}`,
@@ -880,9 +893,13 @@ const ensureWorkerStarted = (
     )
 
     // Create Runtime API server on ephemeral port
-    const { port, state: runtimeState } = yield* startRuntimeApiServer().pipe(
-      Effect.provideService(Scope.Scope, serverScope),
-    )
+    const { port, state: runtimeState } = yield* startRuntimeApiServer({
+      functionMetadata: {
+        functionName: fn.functionName,
+        functionVersion: "$LATEST",
+        handler: fn.localHandler,
+      },
+    }).pipe(Effect.provideService(Scope.Scope, serverScope))
 
     // Create worker object (without process initially - will be set after start)
     // We add to map BEFORE starting worker to handle concurrent invocations
@@ -1032,9 +1049,14 @@ const ensureContainerStarted = (
 
     // Create Runtime API server on ephemeral port
     // Use poll timeout that's shorter than idle timeout so container exits naturally
-    const { port, state: runtimeState } = yield* startRuntimeApiServer(
+    const { port, state: runtimeState } = yield* startRuntimeApiServer({
       pollTimeoutMs,
-    ).pipe(Effect.provideService(Scope.Scope, serverScope))
+      functionMetadata: {
+        functionName: fn.functionName,
+        functionVersion: "$LATEST",
+        handler: "index.handler",
+      },
+    }).pipe(Effect.provideService(Scope.Scope, serverScope))
 
     // Generate container name and image name
     const containerName = `lambda-${fn.functionName.replace(/[^a-zA-Z0-9]/g, "-")}`
@@ -1158,6 +1180,15 @@ const rebuildDockerContainer = (
       })
       .pipe(Effect.scoped)
 
+    // Inspect the image to get original entrypoint/cmd for extension wrapper
+    const imageConfig = yield* docker
+      .inspect(container.imageName)
+      .pipe(Effect.scoped)
+    const extensionWrapper = buildExtensionWrapperCommand(
+      imageConfig.entrypoint,
+      imageConfig.cmd,
+    )
+
     // Restart the container by triggering container startup
     // The existing fiber will have exited when we stopped the container
     // We need to start a new one
@@ -1180,6 +1211,10 @@ const rebuildDockerContainer = (
       timeoutSeconds: 3600,
       platform,
     })
+
+    // Apply extension wrapper to start extensions before the app
+    containerConfig.entrypoint = extensionWrapper.entrypoint
+    containerConfig.command = extensionWrapper.command
 
     // Start the new container
     yield* Effect.logDebug(
@@ -1295,6 +1330,8 @@ const handleDockerInvocation = (
     yield* Effect.logDebug(
       `[Local] Queueing to Runtime API on port ${container.port}`,
     )
+    // Notify extensions about the invocation (for Lambda Web Adapter support)
+    yield* notifyExtensionsInvoke(container.runtimeState, lambdaInvocation)
     yield* queueInvocation(container.runtimeState, lambdaInvocation)
     yield* Effect.logDebug(`[Local] Invocation queued successfully`)
   })
