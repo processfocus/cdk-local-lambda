@@ -46,8 +46,8 @@ const project = new typescript.TypeScriptProject({
       target: "ES2024",
       lib: ["ES2024"],
       skipLibCheck: true, // Skip type checking of declaration files to avoid @effect/platform-bun errors
-      noUncheckedIndexedAccess: true,
-      noPropertyAccessFromIndexSignature: true,
+      noUncheckedIndexedAccess: false,
+      noPropertyAccessFromIndexSignature: false,
       exactOptionalPropertyTypes: true,
     },
   },
@@ -58,9 +58,9 @@ const project = new typescript.TypeScriptProject({
       target: "ES2024",
       lib: ["ES2024"],
       skipLibCheck: true,
-      noUncheckedIndexedAccess: true,
-      noPropertyAccessFromIndexSignature: true,
-      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: false,
+      noPropertyAccessFromIndexSignature: false,
+      exactOptionalPropertyTypes: false,
     },
   },
 

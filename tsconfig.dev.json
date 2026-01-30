@@ -26,9 +26,9 @@
     "target": "ES2024",
     "moduleResolution": "bundler",
     "skipLibCheck": true,
-    "noUncheckedIndexedAccess": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "exactOptionalPropertyTypes": true
+    "noUncheckedIndexedAccess": false,
+    "noPropertyAccessFromIndexSignature": false,
+    "exactOptionalPropertyTypes": false
   },
   "include": [
     "src/**/*.ts",

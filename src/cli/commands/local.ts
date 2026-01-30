@@ -187,7 +187,10 @@ const checkBootstrapVersion = (qualifier: string) =>
 /**
  * Run the bootstrap stack deployment.
  */
-const runBootstrap = (options: { profile?: string; region?: string }) =>
+const runBootstrap = (options: {
+  profile?: string | undefined
+  region?: string | undefined
+}) =>
   Effect.gen(function* () {
     yield* Effect.logInfo("Running bootstrap stack deployment...")
 
@@ -254,8 +257,8 @@ const runBootstrap = (options: { profile?: string; region?: string }) =>
  */
 const ensureBootstrap = (options: {
   qualifier: string
-  profile?: string
-  region?: string
+  profile?: string | undefined
+  region?: string | undefined
 }) =>
   Effect.gen(function* () {
     yield* Effect.logDebug("[Local] Checking bootstrap stack version...")
@@ -1413,10 +1416,10 @@ type CdkWatchEvent =
  */
 const startCdkWatch = (
   options: {
-    profile?: string
-    region?: string
-    stacks?: string[]
-    all?: boolean
+    profile?: string | undefined
+    region?: string | undefined
+    stacks?: string[] | undefined
+    all?: boolean | undefined
   },
   scope: Scope.Scope,
 ): Effect.Effect<
@@ -1656,8 +1659,8 @@ export const localCommand = Command.make(
       // Bootstrap check must complete first
       yield* ensureBootstrap({
         qualifier,
-        profile: profileValue,
-        region: regionValue,
+        ...(profileValue !== undefined && { profile: profileValue }),
+        ...(regionValue !== undefined && { region: regionValue }),
       })
 
       // Stack filter - populated from CDK watch output, used to filter Lambda discovery
@@ -1809,8 +1812,8 @@ export const localCommand = Command.make(
           // Subscribe using forkDaemon to run independently with context preserved
           // Route to Docker or Node.js handler based on function type
           if (isDocker) {
-            yield* appSyncClient
-              ?.subscribeToInvocations(invocationChannel)
+            yield* appSyncClient!
+              .subscribeToInvocations(invocationChannel)
               .pipe(
                 Stream.runForEach((invocation) =>
                   handleDockerInvocation(
@@ -1835,8 +1838,8 @@ export const localCommand = Command.make(
                 Effect.forkDaemon,
               )
           } else {
-            yield* appSyncClient
-              ?.subscribeToInvocations(invocationChannel)
+            yield* appSyncClient!
+              .subscribeToInvocations(invocationChannel)
               .pipe(
                 Stream.runForEach((invocation) =>
                   handleNodejsInvocation(

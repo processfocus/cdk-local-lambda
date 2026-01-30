@@ -130,7 +130,7 @@ export interface ResponseMessage {
 export interface ErrorPayload {
   errorType: string
   errorMessage: string
-  stackTrace?: string[]
+  stackTrace?: string[] | undefined
 }
 
 export interface LambdaContext {

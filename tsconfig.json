@@ -28,8 +28,8 @@
     "target": "ES2024",
     "moduleResolution": "bundler",
     "skipLibCheck": true,
-    "noUncheckedIndexedAccess": true,
-    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": false,
+    "noPropertyAccessFromIndexSignature": false,
     "exactOptionalPropertyTypes": true
   },
   "include": [

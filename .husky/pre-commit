@@ -1,3 +1,2 @@
 bunx projen
-bun run lint
-bun run test
+bunx projen build

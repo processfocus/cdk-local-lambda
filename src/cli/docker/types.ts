@@ -11,7 +11,7 @@ export interface DockerRunConfig {
   /** Container name (optional) */
   containerName?: string
   /** Platform (e.g., linux/arm64, linux/amd64) for cross-platform execution */
-  platform?: string
+  platform?: string | undefined
   /** Environment variables to pass to the container */
   environment: Record<string, string>
   /** Memory limit in MB */
@@ -27,7 +27,7 @@ export interface DockerRunConfig {
   /** Additional Docker run arguments */
   additionalArgs?: string[]
   /** Optional invocation context map for log prefixing (requestId -> { num }) */
-  invocationContexts?: Map<string, { num: number }>
+  invocationContexts?: Map<string, { num: number }> | undefined
   /** Override the container's entrypoint */
   entrypoint?: string[]
   /** Override the container's command (arguments after the image) */
