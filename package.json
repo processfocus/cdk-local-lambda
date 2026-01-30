@@ -6,7 +6,7 @@
     "url": "https://github.com/processfocus/cdk-local-lambda.git"
   },
   "bin": {
-    "cdk-local-lambda": "lib/cli/index.js"
+    "cll": "lib/cli/index.js"
   },
   "scripts": {
     "build": "npx projen build",

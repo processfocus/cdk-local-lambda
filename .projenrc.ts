@@ -119,7 +119,7 @@ project.addTask("test:integration", {
 })
 
 // Add bin entry for CLI
-project.addBins({ "cdk-local-lambda": "lib/cli/index.js" })
+project.addBins({ cll: "lib/cli/index.js" })
 
 // Set package type to module for ESM support
 project.package.addField("type", "module")
