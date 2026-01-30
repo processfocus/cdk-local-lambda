@@ -33,7 +33,6 @@
         "BUMPFILE": "dist/version.txt",
         "RELEASETAG": "dist/releasetag.txt",
         "RELEASE_TAG_PREFIX": "",
-        "VERSIONRCOPTIONS": "{\"preMajor\":false}",
         "BUMP_PACKAGE": "commit-and-tag-version@^12"
       },
       "steps": [
@@ -234,7 +233,6 @@
         "BUMPFILE": "dist/version.txt",
         "RELEASETAG": "dist/releasetag.txt",
         "RELEASE_TAG_PREFIX": "",
-        "VERSIONRCOPTIONS": "{\"preMajor\":false}",
         "BUMP_PACKAGE": "commit-and-tag-version@^12"
       },
       "steps": [
