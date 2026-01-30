@@ -8,14 +8,14 @@
  *
  * Therefore:
  * - In-process (static ESM imports): capture is expected to be missing.
- * - With `bun --preload local-live-lambda/bootstrap`: capture should work.
+ * - With `bun --preload cdk-local-lambda/bootstrap`: capture should work.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import * as cdk from "aws-cdk-lib"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 
 // Import bootstrap BEFORE aws-lambda-nodejs to install hooks
-import "local-live-lambda/bootstrap"
+import "cdk-local-lambda/bootstrap"
 
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs"
 
@@ -136,7 +136,7 @@ describe("live-lambda-bootstrap", () => {
         [
           "bun",
           "--preload",
-          "local-live-lambda/bootstrap",
+          "cdk-local-lambda/bootstrap",
           "-e",
           `import * as cdk from 'aws-cdk-lib';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';

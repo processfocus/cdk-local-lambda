@@ -20,7 +20,7 @@ import { createRequire } from "node:module"
 const requireFromPackage = createRequire(import.meta.url)
 
 // Prefer resolving dependencies from the *CDK app project* (process.cwd()).
-// This avoids patching a nested aws-cdk-lib copy when local-live-lambda is
+// This avoids patching a nested aws-cdk-lib copy when cdk-local-lambda is
 // installed with its own node_modules (common with package managers).
 let requireFromProject = requireFromPackage
 try {
@@ -167,7 +167,7 @@ let cachedLambdaModule: LambdaModule | null = null
  *   This means that mutating/replacing `module.exports.Foo` AFTER the ESM import
  *   was linked will not affect `import { Foo } from "..."` in the current process.
  * - Therefore, Bun patching only works reliably when this bootstrap runs before
- *   the app entry point is loaded, e.g. via `bun --preload local-live-lambda/bootstrap`.
+ *   the app entry point is loaded, e.g. via `bun --preload cdk-local-lambda/bootstrap`.
  *
  * Node.js:
  * - We can patch Module._load to intercept module loading.
@@ -185,7 +185,7 @@ if (isBun) {
         "[LiveLambda] Warning: Running in Bun without --preload. Automatic handler/docker detection is likely disabled.",
       )
       console.warn(
-        "[LiveLambda] Fix: run Bun with `--preload local-live-lambda/bootstrap`.",
+        "[LiveLambda] Fix: run Bun with `--preload cdk-local-lambda/bootstrap`.",
       )
     }
 

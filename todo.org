@@ -1,3 +1,15 @@
+* TODO Rename cli to cll
+* TODO Update README with clear install instructions
+* TODO Add labmda trigger via bucket to example stack
+* TODO It seems we open many subscriptions to wss, could we use just one?
+* TODO Use CDK_LOCAL_LAMBDA instead of CDK_LIVE?
+* TODO Found 2 related issues with the graceful skip implementation:
+
+Issue 1: Misleading log message - Line 109 logs 'Transforming function' before checking if the function will actually be skipped. Move this log after the null check at line 128.
+
+Issue 2: Repeated processing - When getHandlerPaths() returns null at line 125, the early return skips adding the function to processedFunctions (line 140). This causes the same skipped function to be processed repeatedly. Add processedFunctions.add(nodeId) before the early return.
+
+Both issues need fixing to prevent confusing logs and wasted processing cycles.
 * DONE refactor: move bootstrap to separate commands/ directory
 CLOSED: [2026-01-09 Fri 14:15]
 * DONE aIt seems we lost the cdk bootstrap identifier from our SSM parameters.
@@ -36,8 +48,10 @@ CLOSED: [2026-01-21 Wed 10:02]
 CLOSED: [2026-01-21 Wed 18:48]
 - State "CANCELLED"  from "TODO"       [2026-01-21 Wed 18:48] \\
   I don't think that will work as we need to compile the docker images
-* IN-PROGRESS Change all logging to be Effect logging.
-* TODO Error when we just wait:
+* DONE Change all logging to be Effect logging.
+CLOSED: [2026-01-24 Sat 08:55]
+* DONE Error when we just wait:
+CLOSED: [2026-01-27 Tue 18:49]
   [Container] [ERROR] [1769144635941] LAMBDA_RUNTIME Failed to get next invocation. No Response from endpoint
   [Container] node:internal/process/promises:394
       triggerUncaughtException(err, true /* fromPromise */);
@@ -46,20 +60,37 @@ CLOSED: [2026-01-21 Wed 18:48]
 
   Node.js v24.13.0
   [Docker] Container exited with code 1
-* TODO Check live editing lambda survives calls.
-* TODO Add test env var only comes in via first invoke
-* TODO need test that env vars are only sent once
-* TODO Need test that only sent env vars make it into docker/lambda, no other local env var,
+* DONE [Container] prefix should be the actual lambda prefix, but prefix is possibly not great
+CLOSED: [2026-01-28 Wed 11:14]
+  We had that request number prefix, seems to work better.
+* DONE Check live editing lambda survives calls.
+CLOSED: [2026-01-28 Wed 18:00]
+* DONE Lambda process does not use new (docker) logging
+CLOSED: [2026-01-29 Thu 11:42]
+* DONE Add test env var only comes in via first invoke
+CLOSED: [2026-01-29 Thu 10:57]
+* DONE need test that env vars are only sent once
+CLOSED: [2026-01-29 Thu 10:57]
+* DONE Need test that only sent env vars make it into docker/lambda, no other local env var,
+CLOSED: [2026-01-29 Thu 10:57]
   except what is normal/needed to run, but this is a whitelist only.
-* TODO Container needs to restart on code changes
+* DONE Container needs to restart on code changes: I think that works?
+CLOSED: [2026-01-29 Thu 15:50]
+* DONE node process needs to restart on crash
+CLOSED: [2026-01-28 Wed 18:06]
 * TODO Restart container on crash
+* TODO Container will not rebuild after having stopped:
+  [Local] Cannot rebuild CompleteExampleStack-DockerAdder757B287D-j4SvVy9I8pcy - container not found
+* DONE After cdk deploy seems we get stuck at discovering functions now?
+CLOSED: [2026-01-28 Wed 18:01]
 * DONE rename hello.test.ts
 CLOSED: [2026-01-20 Tue 13:07]
 * DONE Drop shouldSkipIntegrationTests from test/setup.ts
 CLOSED: [2026-01-20 Tue 13:07]
-* TODO The logging is insane
+* DONE The logging is insane
+CLOSED: [2026-01-29 Thu 11:42]
 * TODO Tests for bridge appsync client
-* TODO On restart of node/docker we need to use the exact same env vars as in initial send
+* TODO On restart of docker we need to use the exact same env vars as in initial send
 * DONE Tests for live cdk: that we do not change important parameters
 CLOSED: [2026-01-20 Tue 13:07]
 

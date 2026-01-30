@@ -13,12 +13,12 @@ describe("LiveLambdaAspect (integration via preload)", () => {
       [
         "bun",
         "--preload",
-        "local-live-lambda/bootstrap",
+        "cdk-local-lambda/bootstrap",
         "-e",
         `import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
-import { LiveLambdaAspect } from 'local-live-lambda';
+import { LiveLambdaAspect } from 'cdk-local-lambda';
 
 const app = new cdk.App();
 const stack = new cdk.Stack(app, 'TestStack');
