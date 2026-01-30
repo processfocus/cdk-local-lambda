@@ -74,9 +74,6 @@ const project = new typescript.TypeScriptProject({
     "@types/bun",
     "husky",
   ],
-
-  // Use bunx projen for task execution (bun .projenrc.ts doesn't support task args)
-  projenCommand: "bunx projen",
 })
 
 // Add Biome for linting and formatting
