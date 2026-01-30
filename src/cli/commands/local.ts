@@ -134,6 +134,8 @@ interface NodejsWorker {
   workerProcess: ChildProcess
   /** Environment variables captured from first invocation */
   env: Record<string, string>
+  /** Currently processing request ID for log prefixing */
+  currentRequestId: string | undefined
 }
 
 /**
@@ -608,6 +610,7 @@ const startNodejsWorker = (
   projectRoot: string,
   env: Record<string, string>,
   invocationContexts: Map<string, InvocationContext>,
+  worker: NodejsWorker,
 ): Effect.Effect<ChildProcess, Error> =>
   Effect.gen(function* () {
     if (!fn.localHandler) {
@@ -679,6 +682,13 @@ const startNodejsWorker = (
         if (ctx) {
           // Strip timestamp and request ID, keep just LEVEL MESSAGE
           return { prefix: `[${ctx.num}]`, content: match[3] }
+        }
+      }
+      // Fallback to worker's current request ID for logs without request ID
+      if (worker.currentRequestId) {
+        const ctx = invocationContexts.get(worker.currentRequestId)
+        if (ctx) {
+          return { prefix: `[${ctx.num}]`, content: line }
         }
       }
       return { prefix: "[Worker]", content: line }
@@ -780,6 +790,9 @@ const processWorkerResponses = (
         }
         invocationContexts.delete(response.requestId)
       }
+
+      // Clear current request ID to prevent stale prefixes
+      worker.currentRequestId = undefined
     }
   })
 
@@ -910,6 +923,7 @@ const ensureWorkerStarted = (
       port,
       workerProcess: undefined as unknown as ChildProcess, // Will be set shortly
       env: invocationEnv,
+      currentRequestId: undefined,
     }
 
     // Add to map immediately to prevent race conditions
@@ -923,6 +937,7 @@ const ensureWorkerStarted = (
       projectRoot,
       invocationEnv,
       invocationContexts,
+      worker,
     ).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
@@ -1399,6 +1414,9 @@ const handleNodejsInvocation = (
       logGroupName: invocation.context.logGroupName,
       logStreamName: invocation.context.logStreamName,
     }
+
+    // Track current request ID for log prefixing
+    worker.currentRequestId = invocation.requestId
 
     yield* queueInvocation(worker.runtimeState, lambdaInvocation)
   })

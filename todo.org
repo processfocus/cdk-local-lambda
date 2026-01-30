@@ -1,9 +1,14 @@
-* TODO Rename cli to cll
+* DONE Rename cli to cll
+CLOSED: [2026-01-31 Sat 10:12]
 * TODO Update README with clear install instructions
+* IN-PROGRESS Replace [Worker] prefix with request number
+* TODO Refer to SST v2
+* TODO Document what doesn't work
 * TODO Add labmda trigger via bucket to example stack
 * TODO It seems we open many subscriptions to wss, could we use just one?
 * TODO Use CDK_LOCAL_LAMBDA instead of CDK_LIVE?
-* TODO Found 2 related issues with the graceful skip implementation:
+* TODO Add screenshot of what it looks like
+* IN-PROGRESS Found 2 related issues with the graceful skip implementation:
 
 Issue 1: Misleading log message - Line 109 logs 'Transforming function' before checking if the function will actually be skipped. Move this log after the null check at line 128.
 
@@ -100,5 +105,4 @@ Missed entire architecture
 - we didn't get cdk deploy and live mode with daemon
 - docker image was not a replacement
 * TODO Rename complete stack to LocalLiveLambdaExample
-* Send patch to CDK to make entry & hander visible.
-* TODO Switch repo to processfocus: free publicity
+* TODO Send patch to CDK to make entry & hander visible.
