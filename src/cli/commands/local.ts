@@ -770,6 +770,74 @@ const processWorkerResponses = (
   })
 
 /**
+ * Environment variables to completely filter out from invocation env.
+ * These are not relevant for local execution.
+ */
+const ENV_VARS_TO_FILTER = new Set(["AWS_LAMBDA_LOG_STREAM_NAME"])
+
+/**
+ * Environment variables to ignore when calculating if env has changed.
+ * These change frequently but don't require a container restart.
+ *
+ * TODO: AWS credentials (ACCESS_KEY_ID, SECRET_ACCESS_KEY, SESSION_TOKEN)
+ * do expire and will need refreshing. For now we ignore them to avoid
+ * unnecessary restarts, but we should implement credential refresh logic
+ * that updates the container's credentials without a full restart.
+ */
+const ENV_VARS_TO_IGNORE_IN_DIFF = new Set([
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+])
+
+/**
+ * Filter out irrelevant env vars from invocation environment.
+ */
+const sanitizeInvocationEnv = (
+  env: Record<string, string>,
+): Record<string, string> => {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (!ENV_VARS_TO_FILTER.has(key)) {
+      result[key] = value
+    }
+  }
+  return result
+}
+
+/**
+ * Compute which environment variables have changed between two env objects.
+ * Returns a human-readable summary of the changes.
+ * Ignores env vars in ENV_VARS_TO_IGNORE_IN_DIFF.
+ */
+const getEnvDiff = (
+  oldEnv: Record<string, string>,
+  newEnv: Record<string, string>,
+): string => {
+  const changes: string[] = []
+
+  // Check for added or modified keys
+  for (const key of Object.keys(newEnv)) {
+    if (ENV_VARS_TO_IGNORE_IN_DIFF.has(key)) continue
+    if (!(key in oldEnv)) {
+      changes.push(`+${key}`)
+    } else if (oldEnv[key] !== newEnv[key]) {
+      changes.push(`~${key}`)
+    }
+  }
+
+  // Check for removed keys
+  for (const key of Object.keys(oldEnv)) {
+    if (ENV_VARS_TO_IGNORE_IN_DIFF.has(key)) continue
+    if (!(key in newEnv)) {
+      changes.push(`-${key}`)
+    }
+  }
+
+  return changes.join(", ")
+}
+
+/**
  * Ensure a Node.js worker is started for a function.
  * If the worker already exists, return it.
  * Otherwise, create the Runtime API server, add to workers map, and start the worker.
@@ -789,11 +857,10 @@ const ensureWorkerStarted = (
     const existing = currentWorkers.get(fn.functionName)
     if (existing) {
       // Check if env vars have changed (e.g., after CDK redeploy)
-      const envChanged =
-        JSON.stringify(existing.env) !== JSON.stringify(invocationEnv)
-      if (envChanged) {
+      const envDiff = getEnvDiff(existing.env, invocationEnv)
+      if (envDiff) {
         yield* Effect.logInfo(
-          `[Local] Environment changed for ${fn.functionName}, restarting worker...`,
+          `[Local] Environment changed for ${fn.functionName}, restarting worker... (${envDiff})`,
         )
         // Kill the old worker
         yield* Effect.try(() => existing.workerProcess.kill("SIGTERM")).pipe(
@@ -887,9 +954,8 @@ const ensureContainerStarted = (
     const existing = currentContainers.get(fn.functionName)
     if (existing) {
       // Check if env vars have changed (e.g., after CDK redeploy)
-      const envChanged =
-        JSON.stringify(existing.env) !== JSON.stringify(invocationEnv)
-      if (envChanged) {
+      const envDiff = getEnvDiff(existing.env, invocationEnv)
+      if (envDiff) {
         // IMPORTANT: Update env immediately (before any yields) to prevent
         // other concurrent invocations from also detecting the change and
         // triggering duplicate restarts
@@ -905,7 +971,7 @@ const ensureContainerStarted = (
         }
 
         yield* Effect.logInfo(
-          `[Local] Environment changed for ${fn.functionName}, restarting container...`,
+          `[Local] Environment changed for ${fn.functionName}, restarting container... (${envDiff})`,
         )
         existing.isRebuilding = true
 
@@ -1175,7 +1241,7 @@ const handleDockerInvocation = (
     // Use env from invocation (captured from bridge Lambda on first invoke)
     const container = yield* ensureContainerStarted(
       fn,
-      invocation.env ?? {},
+      sanitizeInvocationEnv(invocation.env ?? {}),
       containersRef,
       serverScope,
       projectRoot,
@@ -1249,7 +1315,7 @@ const handleNodejsInvocation = (
 ): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
     // Get env vars from invocation (forwarded from bridge Lambda)
-    const invocationEnv = invocation.env ?? {}
+    const invocationEnv = sanitizeInvocationEnv(invocation.env ?? {})
 
     // Ensure worker is started (lazy startup on first invocation)
     const worker = yield* ensureWorkerStarted(
