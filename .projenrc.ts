@@ -20,6 +20,8 @@ const project = new typescript.TypeScriptProject({
   releaseToNpm: true,
   npmAccess: javascript.NpmAccess.PUBLIC,
   npmProvenance: true,
+  workflowNodeVersion: "24.x",
+  npmTrustedPublishing: true,
 
   // Enable ESM package type
   entrypoint: "lib/index.js",
@@ -120,7 +122,7 @@ project.github
   ?.tryFindWorkflow("pull-request-lint")
   ?.file?.addOverride(
     "jobs.validate.steps.0.with.types",
-    "feat\nfix\nchore\nrefactor\ntest\nvendor",
+    "ci\nfeat\nfix\nchore\nrefactor\ntest\nvendor",
   )
 
 // Add keywords for npm discoverability
