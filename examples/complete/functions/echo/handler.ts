@@ -1,46 +1,58 @@
 /**
- * Simple echo handler that returns the input event.
+ * Simple echo handler running as a Bun HTTP server.
  *
- * This handler is used in a Bun-based Docker Lambda to demonstrate
- * the live debugging workflow with DockerImageFunction.
+ * This handler uses AWS Lambda Web Adapter to run as a standard HTTP server
+ * inside Lambda, demonstrating the live debugging workflow with DockerImageFunction.
  */
-
-import type { Context } from "aws-lambda"
 
 interface EchoResponse {
   message: string
   event: unknown
-  context: {
-    functionName: string
-    functionVersion: string
-    awsRequestId: string
-    memoryLimitInMB: string
-  }
+  requestId: string
   timestamp: string
 }
 
-/**
- * Echo handler - returns the event along with context info
- */
-export async function handler(
-  event: unknown,
-  context: Context,
-): Promise<EchoResponse> {
-  console.log("[Echo] Received event:", JSON.stringify(event))
+const PORT = Number(process.env.PORT) || 8080
 
-  const response: EchoResponse = {
-    message: "Hello from the echo handler!",
-    event,
-    context: {
-      functionName: context.functionName,
-      functionVersion: context.functionVersion,
-      awsRequestId: context.awsRequestId,
-      memoryLimitInMB: context.memoryLimitInMB,
-    },
-    timestamp: new Date().toISOString(),
-  }
+const server = Bun.serve({
+  port: PORT,
+  async fetch(request: Request): Promise<Response> {
+    // Lambda Web Adapter sends the event as POST body to the root path
+    // and includes Lambda context in headers
+    const requestId =
+      request.headers.get("x-amzn-request-id") ||
+      request.headers.get("x-request-id") ||
+      crypto.randomUUID()
 
-  console.log("[Echo] Returning response:", JSON.stringify(response))
+    console.log(`[Echo] Received request: ${request.method} ${request.url}`)
 
-  return response
-}
+    let event: unknown = null
+    if (request.method === "POST") {
+      try {
+        event = await request.json()
+      } catch {
+        event = await request.text()
+      }
+    }
+
+    console.log("[Echo] Event:", JSON.stringify(event))
+
+    const response: EchoResponse = {
+      message: "Hello from the echo handler!",
+      event,
+      requestId,
+      timestamp: new Date().toISOString(),
+    }
+
+    console.log("[Echo] Returning response:", JSON.stringify(response))
+
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    })
+  },
+})
+
+console.log(`[Echo] Server listening on port ${server.port}`)

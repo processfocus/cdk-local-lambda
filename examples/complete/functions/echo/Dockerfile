@@ -1,22 +1,20 @@
-# Node.js-based Lambda container for the echo handler
-# This uses the official Lambda Node.js runtime image
+# Bun-based Lambda container using AWS Lambda Web Adapter
+# This allows the handler to run as a standard HTTP server
 
-FROM oven/bun:1 AS builder
+FROM oven/bun:1-alpine
 
-WORKDIR /build
+# Install Lambda Web Adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
 
-# Copy and install dependencies (if any)
+WORKDIR /app
+
+# Copy the handler
 COPY handler.ts .
 
-# Bundle the handler for Node.js (CJS for Lambda runtime)
-RUN bun build handler.ts --outfile=handler.js --target=node --format=cjs
+# Expose server port for local testing
+EXPOSE 8080
 
-# Production image based on AWS Lambda Node.js runtime
-FROM public.ecr.aws/lambda/nodejs:24-arm64
+# Lambda Web Adapter expects the server to listen on PORT
+ENV PORT=8080
 
-# Copy the bundled handler
-WORKDIR /var/task
-COPY --from=builder /build/handler.js .
-
-# Lambda Node.js runtime reads the handler from CMD
-CMD ["handler.handler"]
+CMD ["bun", "handler.ts"]
