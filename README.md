@@ -1,10 +1,15 @@
-# Run lambdas in CDK stack locally
+# cdk-local-lambda
 
-Run typescript and docker lambdas in a CDK stack locally. This
-improves the DX as you can edit lambdas and see changes and fixes
-immediately.
+Run Lambda functions from your CDK stack locally. Edit your code and see changes immediately—no redeployment required.
 
-Needs two minor changes to a CDK stack, and the supplied cli to launch it.
+## Supported Runtimes
+
+| Runtime | Status |
+|---------|--------|
+| TypeScript / JavaScript | Supported |
+| Docker | Supported |
+| Python | Not yet supported |
+| Java | Not yet supported |
 
 ## Installation
 
@@ -12,18 +17,21 @@ Needs two minor changes to a CDK stack, and the supplied cli to launch it.
 npm install cdk-local-lambda
 ```
 
-## Usage
+## Quick Start
 
-### 1. Add the bootstrap to your CDK app
+Setting up local Lambda development requires three steps:
 
-Unfortunately CDK hides lambda internals which we need to know. Until
-CDK accepts our patch to improve this, you need to live patch
-CDK. This depends on how you run your CDK app.
+1. Load the bootstrap module
+2. Apply the LiveLambda aspect
+3. Start the local daemon
 
-#### tsx/ts-node
+### 1. Load the bootstrap module
 
-In your CDK app entry point (e.g., `bin/app.ts`), add the bootstrap as
-the every first entry:
+The bootstrap module patches CDK internals to enable local execution. The loading method depends on your runtime.
+
+#### tsx / ts-node
+
+In your CDK app entry point (e.g., `bin/app.ts`), import the bootstrap module before any other imports:
 
 ```typescript
 import "cdk-local-lambda/bootstrap" // Must be first import!
@@ -32,9 +40,9 @@ import * as cdk from "aws-cdk-lib"
 
 #### Bun
 
-If you run your CDK app with Bun, you must preload the bootstrap. Bun snapshots CommonJS named exports during static ESM import linking, so a normal `import "cdk-local-lambda/bootstrap"` in your app entry point is too late.
+Bun requires preloading the bootstrap module because it snapshots CommonJS exports during static ESM import linking. A regular import statement runs too late.
 
-Add a `--preload` command to `cdk.json`:
+Add the `--preload` flag to your `cdk.json`:
 
 ```json
 {
@@ -42,9 +50,9 @@ Add a `--preload` command to `cdk.json`:
 }
 ```
 
-### 2. Add the aspect to your CDK app
+### 2. Apply the LiveLambda aspect
 
-In your CDK app entry point (e.g., `bin/app.ts`):
+In your CDK app entry point (e.g., `bin/app.ts`), apply the aspect after defining your stacks:
 
 ```typescript
 import "cdk-local-lambda/bootstrap" // Must be first import!
@@ -61,19 +69,19 @@ app.synth()
 
 ### 3. Start the local daemon
 
-The daemon deploys your stack with live mode enabled and runs your Lambda functions locally:
+The daemon deploys your stack with live mode enabled and runs Lambda functions locally:
 
 ```bash
 npx cll local
 ```
 
-If you have multiple stacks:
+For multiple stacks, specify which one to use:
 
 ```bash
 npx cll local --stacks MyStack
 ```
 
-Use `--profile` and `--region` to specify AWS credentials:
+To specify AWS credentials:
 
 ```bash
 npx cll local --stacks MyStack --profile my-profile --region us-west-2
@@ -81,14 +89,20 @@ npx cll local --stacks MyStack --profile my-profile --region us-west-2
 
 ### Manual bootstrap (optional)
 
-If you prefer to deploy the bootstrap stack separately:
+To deploy the bootstrap stack separately:
 
 ```bash
 npx cll bootstrap --profile my-profile --region us-west-2
 ```
 
-## Common issues
+## Troubleshooting
 
-1. You see: "No functions found with live-lambda tags yet. Have you patched your CDK project (bootstrap) and added the LiveLambdaAspect?"
+### "No functions found with live-lambda tags yet"
 
-Make sure your CDK app loads `cdk-local-lambda/bootstrap` (Bun: use `--preload cdk-local-lambda/bootstrap`) and that you call `applyLiveLambdaAspect(app)` in your app entry point.
+This error appears when the bootstrap module or aspect is not configured correctly.
+
+**Checklist:**
+
+- Verify that `cdk-local-lambda/bootstrap` is loaded (use `--preload` for Bun)
+- Confirm that `applyLiveLambdaAspect(app)` is called in your app entry point
+- Ensure the aspect is applied after all stacks are defined
