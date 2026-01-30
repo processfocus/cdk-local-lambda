@@ -88,7 +88,7 @@
       "description": "Synthesize project files",
       "steps": [
         {
-          "exec": "ts-node --project tsconfig.dev.json .projenrc.ts"
+          "exec": "tsx .projenrc.ts"
         }
       ]
     },
@@ -249,13 +249,13 @@
       },
       "steps": [
         {
-          "exec": "bunx npm-check-updates@18 --upgrade --target=minor --peer --no-deprecated --dep=dev,peer,prod,optional --filter=@biomejs/biome,@effect/language-service,@types/aws-lambda,@types/bun,@types/ws,aws-cdk,husky,projen,ts-node,typescript,@aws-crypto/sha256-js,@aws-sdk/client-lambda,@aws-sdk/client-s3,@aws-sdk/client-ssm,@aws-sdk/credential-provider-node,@aws-sdk/protocol-http,@aws-sdk/signature-v4,@effect/cli,@effect/platform,@effect/platform-bun,aws-cdk-lib,chokidar,effect,ws"
+          "exec": "bunx npm-check-updates@18 --upgrade --target=minor --peer --no-deprecated --dep=dev,peer,prod,optional --filter=@biomejs/biome,@effect/language-service,@types/aws-lambda,@types/bun,@types/ws,aws-cdk,husky,projen,ts-node,tsx,typescript,@aws-crypto/sha256-js,@aws-sdk/client-lambda,@aws-sdk/client-s3,@aws-sdk/client-ssm,@aws-sdk/credential-provider-node,@aws-sdk/protocol-http,@aws-sdk/signature-v4,@effect/cli,@effect/platform,@effect/platform-bun,aws-cdk-lib,chokidar,effect,ws"
         },
         {
           "exec": "bun install"
         },
         {
-          "exec": "bun update @biomejs/biome @effect/language-service @types/aws-lambda @types/bun @types/node @types/ws aws-cdk commit-and-tag-version constructs husky projen ts-node typescript @aws-crypto/sha256-js @aws-sdk/client-lambda @aws-sdk/client-s3 @aws-sdk/client-ssm @aws-sdk/credential-provider-node @aws-sdk/protocol-http @aws-sdk/signature-v4 @effect/cli @effect/platform @effect/platform-bun aws-cdk-lib chokidar effect ws"
+          "exec": "bun update @biomejs/biome @effect/language-service @types/aws-lambda @types/bun @types/node @types/ws aws-cdk commit-and-tag-version constructs husky projen ts-node tsx typescript @aws-crypto/sha256-js @aws-sdk/client-lambda @aws-sdk/client-s3 @aws-sdk/client-ssm @aws-sdk/credential-provider-node @aws-sdk/protocol-http @aws-sdk/signature-v4 @effect/cli @effect/platform @effect/platform-bun aws-cdk-lib chokidar effect ws"
         },
         {
           "exec": "npx projen"
