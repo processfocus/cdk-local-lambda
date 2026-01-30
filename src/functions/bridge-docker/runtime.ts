@@ -7,8 +7,8 @@
  * 3. Post responses back to the runtime API
  */
 
-import { handler as bridgeHandler } from "../bridge/handler.js"
 import type { Context } from "aws-lambda"
+import { handler as bridgeHandler } from "../bridge/handler.js"
 
 const RUNTIME_API = process.env.AWS_LAMBDA_RUNTIME_API
 const HANDLER = process.env._HANDLER || "index.handler"
