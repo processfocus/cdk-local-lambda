@@ -303,9 +303,6 @@ export class LiveLambdaAspect implements cdk.IAspect {
       }),
     )
 
-    // Increase timeout to allow for local debugging
-    cfnFunction.timeout = 300 // 5 minutes
-
     // Replace the Docker image with the bridge image
     cfnFunction.code = {
       imageUri: bridgeImageUri,
@@ -386,9 +383,6 @@ export class LiveLambdaAspect implements cdk.IAspect {
       }),
     )
 
-    // Increase timeout to allow for local debugging
-    cfnFunction.timeout = 300 // 5 minutes
-
     // Replace the code with bridge handler from bootstrap stack's S3 bucket
     cfnFunction.code = {
       s3Bucket: bridgeBucket,
@@ -399,9 +393,15 @@ export class LiveLambdaAspect implements cdk.IAspect {
 }
 
 /**
- * Helper function to check if live mode is enabled
+ * Check if local mode is enabled (CDK_LOCAL_LAMBDA=true).
+ * Use this in your constructs for conditional configuration.
+ *
+ * @example
+ * timeout: isInLocalMode()
+ *   ? cdk.Duration.minutes(5)
+ *   : cdk.Duration.seconds(30)
  */
-export function isLiveModeEnabled(): boolean {
+export function isInLocalMode(): boolean {
   return process.env.CDK_LOCAL_LAMBDA === "true"
 }
 
@@ -415,7 +415,7 @@ export function applyLiveLambdaAspect(
   scope: IConstruct,
   props: LiveLambdaAspectProps = {},
 ): void {
-  if (!isLiveModeEnabled()) {
+  if (!isInLocalMode()) {
     console.log(
       "[LiveLambda] Live mode not enabled (set CDK_LOCAL_LAMBDA=true to enable)",
     )
