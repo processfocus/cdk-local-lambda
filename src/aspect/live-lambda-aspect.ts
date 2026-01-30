@@ -106,15 +106,15 @@ export class LiveLambdaAspect implements cdk.IAspect {
       return
     }
 
-    console.log(`[LiveLambda] Transforming function: ${functionId}`)
-
     const stackName = this.props.stackName || cdk.Stack.of(fn).stackName
 
     // Check if this is a DockerImageFunction
     const isDockerFunction = isDockerImageFunction(fn)
 
     if (isDockerFunction) {
-      console.log(`[LiveLambda] Detected DockerImageFunction: ${functionId}`)
+      console.log(
+        `[LiveLambda] Transforming DockerImageFunction: ${functionId}`,
+      )
       this.transformDockerFunction(fn, stackName, functionId)
     } else {
       // Get handler paths before we modify anything
@@ -122,10 +122,13 @@ export class LiveLambdaAspect implements cdk.IAspect {
 
       // Skip unsupported functions (not NodejsFunction or DockerImageFunction)
       if (!handlerPaths) {
+        this.processedFunctions.add(nodeId)
         return
       }
 
       const { originalHandler, localHandler } = handlerPaths
+
+      console.log(`[LiveLambda] Transforming function: ${functionId}`)
 
       // Transform the function
       this.transformFunction(
