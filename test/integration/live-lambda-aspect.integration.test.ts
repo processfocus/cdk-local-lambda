@@ -53,7 +53,7 @@ console.log(ok ? 'OK' : 'BAD');
       {
         env: {
           ...process.env,
-          CDK_LIVE: "true",
+          CDK_LOCAL_LAMBDA: "true",
         },
       },
     )

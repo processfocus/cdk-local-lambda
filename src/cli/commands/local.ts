@@ -2,7 +2,7 @@
  * Local command for running Lambda functions locally using Docker.
  *
  * This command:
- * 1. Starts CDK watch with CDK_LIVE=true and hotswap
+ * 1. Starts CDK watch with CDK_LOCAL_LAMBDA=true and hotswap
  * 2. Discovers Lambda functions with live-lambda:handler tag
  * 3. Connects to AppSync Events
  * 4. Subscribes to invocation channels
@@ -1429,7 +1429,7 @@ type CdkWatchEvent =
   | { readonly _tag: "DeployComplete" }
 
 /**
- * Start CDK watch process with CDK_LIVE=true using Effect's Command.
+ * Start CDK watch process with CDK_LOCAL_LAMBDA=true using Effect's Command.
  * Returns the process and a queue of events.
  */
 const startCdkWatch = (
@@ -1466,7 +1466,7 @@ const startCdkWatch = (
 
     const env: Record<string, string> = {
       ...process.env,
-      CDK_LIVE: "true",
+      CDK_LOCAL_LAMBDA: "true",
     } as Record<string, string>
 
     if (options.region) {

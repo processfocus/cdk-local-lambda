@@ -64,7 +64,7 @@ bun src/cli/index.ts local [--stacks StackName1,StackName2]
 
 This starts the local development daemon which:
 1. Ensures the bootstrap stack is deployed
-2. Runs `cdk watch` with `CDK_LIVE=true` for hot reload
+2. Runs `cdk watch` with `CDK_LOCAL_LAMBDA=true` for hot reload
 3. Discovers Lambda functions with live-lambda tags
 4. Subscribes to invocation channels via AppSync
 5. Starts containers/workers lazily on first invocation
@@ -355,7 +355,7 @@ The daemon also runs CDK in watch mode, with hot reload enabled.
 ```ts
 import { applyLiveLambdaAspect } from "../lib/live-lambda-aspect.js"
 
-// Apply live lambda aspect when CDK_LIVE=true
+// Apply live lambda aspect when CDK_LOCAL_LAMBDA=true
 applyLiveLambdaAspect(exampleStack)
 ```
 

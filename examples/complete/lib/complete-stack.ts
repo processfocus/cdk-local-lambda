@@ -5,7 +5,7 @@
  * - DockerImageFunction: Bun-based Docker images (echo, adder)
  * - NodejsFunction: TypeScript/JavaScript handlers (greeter, calculator)
  *
- * When CDK_LIVE=true is set, the aspect transforms them to use the bridge handler.
+ * When CDK_LOCAL_LAMBDA=true is set, the aspect transforms them to use the bridge handler.
  */
 
 import * as path from "node:path"

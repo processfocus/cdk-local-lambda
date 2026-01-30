@@ -59,7 +59,7 @@ export interface LiveLambdaAspectProps {
  * const app = new cdk.App();
  * const stack = new MyStack(app, 'MyStack');
  *
- * if (process.env.CDK_LIVE === 'true') {
+ * if (process.env.CDK_LOCAL_LAMBDA === 'true') {
  *   cdk.Aspects.of(app).add(new LiveLambdaAspect());
  * }
  * ```
@@ -402,7 +402,7 @@ export class LiveLambdaAspect implements cdk.IAspect {
  * Helper function to check if live mode is enabled
  */
 export function isLiveModeEnabled(): boolean {
-  return process.env.CDK_LIVE === "true"
+  return process.env.CDK_LOCAL_LAMBDA === "true"
 }
 
 /**
@@ -417,7 +417,7 @@ export function applyLiveLambdaAspect(
 ): void {
   if (!isLiveModeEnabled()) {
     console.log(
-      "[LiveLambda] Live mode not enabled (set CDK_LIVE=true to enable)",
+      "[LiveLambda] Live mode not enabled (set CDK_LOCAL_LAMBDA=true to enable)",
     )
     return
   }

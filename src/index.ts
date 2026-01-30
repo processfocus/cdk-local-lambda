@@ -3,7 +3,7 @@
  *
  * Exports:
  * - LiveLambdaAspect: CDK Aspect to transform Lambda functions
- * - applyLiveLambdaAspect: Helper to apply the aspect if CDK_LIVE=true
+ * - applyLiveLambdaAspect: Helper to apply the aspect if CDK_LOCAL_LAMBDA=true
  * - isLiveModeEnabled: Check if live mode is enabled
  * - CdkLocalLambdaBootstrapStack: The bootstrap stack for shared infrastructure
  *
