@@ -8,6 +8,11 @@ const project = new typescript.TypeScriptProject({
   eslint: false,
   jest: false, // Use Bun's built-in test runner instead
 
+  // Allow feat commits to trigger minor bumps even in 0.x versions
+  versionrcOptions: {
+    preMajor: false,
+  },
+
   // Package metadata
   description:
     "Run lambdas in CDK stack locally to speed up debugging and improve your DX",
