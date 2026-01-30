@@ -349,7 +349,8 @@ export class AppSyncEventsClient {
     }
 
     if (signedRequest.headers["x-amz-security-token"]) {
-      auth["x-amz-security-token"] = signedRequest.headers["x-amz-security-token"]
+      auth["x-amz-security-token"] =
+        signedRequest.headers["x-amz-security-token"]
     }
 
     return auth
@@ -359,9 +360,7 @@ export class AppSyncEventsClient {
    * Build signed WebSocket connection info for AppSync Events
    * Returns [url, subprotocols] for WebSocket constructor
    */
-  private async buildSignedWebSocketConnection(): Promise<
-    [string, string[]]
-  > {
+  private async buildSignedWebSocketConnection(): Promise<[string, string[]]> {
     const realtimeUrl = new URL(this.realtimeEndpoint)
     realtimeUrl.pathname = "/event/realtime"
     const httpUrl = new URL(this.httpEndpoint)

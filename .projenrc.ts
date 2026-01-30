@@ -73,11 +73,13 @@ const project = new typescript.TypeScriptProject({
     "@types/ws",
     "@types/bun",
     "husky",
+    "tsx", // Use tsx instead of ts-node (ts-node fails with ESM + Node 18.19+)
   ],
-
-  // Use bun to run projenrc for ESM compatibility
-  projenCommand: "bun .projenrc.ts",
 })
+
+// Override default task to use tsx instead of ts-node (fixes ESM compatibility)
+// See: https://github.com/projen/projen/issues/3388
+project.defaultTask?.reset("tsx .projenrc.ts")
 
 // Add Biome for linting and formatting
 project.addDevDeps("@biomejs/biome")
