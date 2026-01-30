@@ -7,13 +7,11 @@
  */
 
 import * as os from "node:os"
-import {
-  type CommandExecutor,
-  Command as PlatformCommand,
-} from "@effect/platform"
+import { CommandExecutor, Command as PlatformCommand } from "@effect/platform"
 import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
 import { Context, Effect, Layer, type Scope, Stream } from "effect"
 import type {
+  DockerImageConfig,
   DockerRunConfig,
   DockerRunResult,
   DockerRuntimeInfo,
@@ -114,8 +112,23 @@ const buildDockerRunArgs = (
     args.push(...config.additionalArgs)
   }
 
+  // Entrypoint override
+  if (config.entrypoint && config.entrypoint.length > 0) {
+    args.push("--entrypoint", config.entrypoint[0])
+  }
+
   // Image
   args.push(config.imageUri)
+
+  // Entrypoint additional args (after image)
+  if (config.entrypoint && config.entrypoint.length > 1) {
+    args.push(...config.entrypoint.slice(1))
+  }
+
+  // Command override (after image and entrypoint args)
+  if (config.command) {
+    args.push(...config.command)
+  }
 
   return args
 }
@@ -199,6 +212,18 @@ export interface DockerService {
    * Get the detected Docker runtime info.
    */
   readonly getRuntimeInfo: () => Effect.Effect<DockerRuntimeInfo, Error>
+
+  /**
+   * Inspect a Docker image to get its configuration.
+   * Returns the ENTRYPOINT and CMD from the image.
+   */
+  readonly inspect: (
+    imageUri: string,
+  ) => Effect.Effect<
+    DockerImageConfig,
+    Error,
+    Scope.Scope | CommandExecutor.CommandExecutor
+  >
 }
 
 /**
@@ -545,6 +570,67 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
         return containerIds.length
       })
 
+    const inspect: DockerService["inspect"] = (imageUri) =>
+      Effect.gen(function* () {
+        const executor = yield* CommandExecutor.CommandExecutor
+
+        // Get entrypoint
+        const entrypointCmd = PlatformCommand.make(
+          runtime.dockerPath,
+          "inspect",
+          "--format",
+          "{{json .Config.Entrypoint}}",
+          imageUri,
+        )
+        const entrypointProc = yield* executor.start(entrypointCmd)
+        const entrypointOutput = yield* Stream.runCollect(
+          Stream.decodeText(entrypointProc.stdout),
+        )
+        const entrypointExitCode = yield* entrypointProc.exitCode
+        if (entrypointExitCode !== 0) {
+          yield* Effect.fail(
+            new Error(`Failed to inspect image entrypoint: ${imageUri}`),
+          )
+        }
+        const entrypointJson = Array.from(entrypointOutput).join("").trim()
+
+        // Get cmd
+        const cmdCmd = PlatformCommand.make(
+          runtime.dockerPath,
+          "inspect",
+          "--format",
+          "{{json .Config.Cmd}}",
+          imageUri,
+        )
+        const cmdProc = yield* executor.start(cmdCmd)
+        const cmdOutput = yield* Stream.runCollect(
+          Stream.decodeText(cmdProc.stdout),
+        )
+        const cmdExitCode = yield* cmdProc.exitCode
+        if (cmdExitCode !== 0) {
+          yield* Effect.fail(
+            new Error(`Failed to inspect image cmd: ${imageUri}`),
+          )
+        }
+        const cmdJson = Array.from(cmdOutput).join("").trim()
+
+        // Parse JSON - null is valid, so handle that
+        const parseJsonArray = (json: string): string[] | null => {
+          if (json === "null" || json === "") return null
+          try {
+            const parsed = JSON.parse(json)
+            return Array.isArray(parsed) ? parsed : null
+          } catch {
+            return null
+          }
+        }
+
+        return {
+          entrypoint: parseJsonArray(entrypointJson),
+          cmd: parseJsonArray(cmdJson),
+        }
+      })
+
     return {
       run,
       runScoped,
@@ -553,6 +639,7 @@ const makeDockerService: Effect.Effect<DockerService, Error> = Effect.gen(
       stop,
       list,
       getRuntimeInfo,
+      inspect,
     } satisfies DockerService
   },
 )
@@ -611,4 +698,56 @@ export const makeLambdaContainerConfig = (options: {
 export interface ContainerOutput {
   type: "stdout" | "stderr"
   data: string
+}
+
+/**
+ * Shell-quote a string for safe inclusion in a shell command.
+ * Uses single quotes and escapes any embedded single quotes.
+ */
+const shellQuote = (s: string): string => {
+  // Single quotes are safest - escape any embedded single quotes
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * Build a wrapper command that starts Lambda extensions before the main app.
+ *
+ * This mimics AWS Lambda's behavior of automatically starting all executables
+ * in /opt/extensions/ as background processes before running the main command.
+ *
+ * @param originalEntrypoint - The image's original ENTRYPOINT
+ * @param originalCmd - The image's original CMD
+ * @returns Entrypoint and command arrays to pass to Docker
+ */
+export const buildExtensionWrapperCommand = (
+  originalEntrypoint: string[] | null,
+  originalCmd: string[] | null,
+): { entrypoint: string[]; command: string[] } => {
+  // Combine original entrypoint + cmd into the full command
+  // Docker behavior: ENTRYPOINT + CMD are concatenated
+  const originalCommand = [
+    ...(originalEntrypoint ?? []),
+    ...(originalCmd ?? []),
+  ]
+
+  // Script to start all executable files in /opt/extensions/ as background processes
+  const extensionStarter =
+    'for ext in /opt/extensions/*; do [ -x "$ext" ] && "$ext" & done'
+
+  // Build the full wrapper command
+  let fullCommand: string
+  if (originalCommand.length > 0) {
+    // Quote each argument and join with spaces
+    const quotedOriginal = originalCommand.map(shellQuote).join(" ")
+    // Start extensions, then exec the original command
+    fullCommand = `${extensionStarter}; exec ${quotedOriginal}`
+  } else {
+    // No original command - just start extensions (unusual but handle it)
+    fullCommand = extensionStarter
+  }
+
+  return {
+    entrypoint: ["/bin/sh"],
+    command: ["-c", fullCommand],
+  }
 }

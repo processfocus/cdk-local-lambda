@@ -16,13 +16,35 @@ import * as HttpRouter from "@effect/platform/HttpRouter"
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest"
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse"
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
-import { Effect, Option, Queue, type Scope } from "effect"
+import { Effect, HashMap, Option, Queue, Ref, type Scope } from "effect"
 import type {
+  ExtensionEvent,
+  ExtensionEventType,
   LambdaError,
   LambdaInitError,
   LambdaInvocation,
   LambdaResponse,
+  RegisteredExtension,
 } from "./types.js"
+
+/**
+ * State for a registered extension.
+ */
+interface ExtensionState {
+  /** Extension info */
+  extension: RegisteredExtension
+  /** Queue of events for this extension */
+  eventQueue: Queue.Queue<ExtensionEvent>
+}
+
+/**
+ * Function metadata for extension registration responses.
+ */
+export interface FunctionMetadata {
+  functionName: string
+  functionVersion: string
+  handler: string
+}
 
 /**
  * State for a Runtime API server session.
@@ -33,6 +55,10 @@ export interface RuntimeApiState {
   invocationQueue: Queue.Queue<LambdaInvocation>
   /** Queue for responses/errors from the container */
   responseQueue: Queue.Queue<LambdaResponse | LambdaError | LambdaInitError>
+  /** Registered extensions by extension ID */
+  extensions: Ref.Ref<HashMap.HashMap<string, ExtensionState>>
+  /** Function metadata for extension registration */
+  functionMetadata: FunctionMetadata
 }
 
 /**
@@ -47,17 +73,22 @@ export interface RuntimeApiServer {
 
 /**
  * Create a new Runtime API state (queues only, no port).
+ *
+ * @param functionMetadata - Function metadata for extension registration responses
  */
-export const makeRuntimeApiState = () =>
+export const makeRuntimeApiState = (functionMetadata: FunctionMetadata) =>
   Effect.gen(function* () {
     const invocationQueue = yield* Queue.unbounded<LambdaInvocation>()
     const responseQueue = yield* Queue.unbounded<
       LambdaResponse | LambdaError | LambdaInitError
     >()
+    const extensions = yield* Ref.make(HashMap.empty<string, ExtensionState>())
 
     return {
       invocationQueue,
       responseQueue,
+      extensions,
+      functionMetadata,
     } satisfies RuntimeApiState
   })
 
@@ -244,11 +275,235 @@ const handleInitError = (state: RuntimeApiState) =>
     return HttpServerResponse.empty({ status: 202 })
   })
 
+// ============================================================================
+// Extensions API handlers
+// @see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-extensions-api.html
+// ============================================================================
+
+/**
+ * Handle POST /2020-01-01/extension/register
+ * Extensions call this to register for lifecycle events.
+ */
+const handleExtensionRegister = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+
+    // Get extension name from header (required)
+    const extensionNameHeader = Headers.get(
+      request.headers,
+      "lambda-extension-name",
+    )
+    const extensionName = Option.getOrElse(
+      extensionNameHeader,
+      () => "unknown-extension",
+    )
+
+    // Parse request body for events to register for
+    const body = yield* Effect.orElseSucceed(
+      request.json as Effect.Effect<{ events?: ExtensionEventType[] }, unknown>,
+      (): { events?: ExtensionEventType[] } => ({}),
+    )
+    const events: ExtensionEventType[] = body.events ?? ["INVOKE", "SHUTDOWN"]
+
+    // Generate unique extension ID
+    const extensionId = crypto.randomUUID()
+
+    // Create event queue for this extension
+    const eventQueue = yield* Queue.unbounded<ExtensionEvent>()
+
+    const extensionState: ExtensionState = {
+      extension: {
+        extensionId,
+        name: extensionName,
+        events,
+      },
+      eventQueue,
+    }
+
+    // Register the extension
+    yield* Ref.update(state.extensions, (exts) =>
+      HashMap.set(exts, extensionId, extensionState),
+    )
+
+    yield* Effect.logDebug(
+      `Extension registered: ${extensionName} (${extensionId}) for events: ${events.join(", ")}`,
+    )
+
+    return yield* HttpServerResponse.json(
+      {
+        functionName: state.functionMetadata.functionName,
+        functionVersion: state.functionMetadata.functionVersion,
+        handler: state.functionMetadata.handler,
+      },
+      {
+        status: 200,
+        headers: Headers.fromInput({
+          "Lambda-Extension-Identifier": extensionId,
+        }),
+      },
+    )
+  })
+
+/**
+ * Handle GET /2020-01-01/extension/event/next
+ * Extensions call this to poll for the next lifecycle event.
+ */
+const handleExtensionEventNext = (
+  state: RuntimeApiState,
+  pollTimeoutMs: number,
+) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+
+    // Get extension ID from header (required)
+    const extensionIdHeader = Headers.get(
+      request.headers,
+      "lambda-extension-identifier",
+    )
+    const extensionId = Option.getOrElse(extensionIdHeader, () => "")
+
+    if (!extensionId) {
+      return HttpServerResponse.empty({
+        status: 403,
+        headers: Headers.fromInput({
+          "Content-Type": "application/json",
+        }),
+      })
+    }
+
+    // Find the extension
+    const extensions = yield* Ref.get(state.extensions)
+    const extensionState = HashMap.get(extensions, extensionId)
+
+    if (Option.isNone(extensionState)) {
+      yield* Effect.logDebug(`Extension not found: ${extensionId}`)
+      return HttpServerResponse.empty({
+        status: 403,
+        headers: Headers.fromInput({
+          "Content-Type": "application/json",
+        }),
+      })
+    }
+
+    const { eventQueue, extension } = extensionState.value
+
+    yield* Effect.logDebug(`Extension ${extension.name} polling for next event`)
+
+    const startTime = Date.now()
+
+    // Poll for the next event with timeout
+    let event: ExtensionEvent | null = null
+
+    while (event === null) {
+      if (Date.now() - startTime > pollTimeoutMs) {
+        yield* Effect.logDebug(
+          "Extension event poll timeout - returning 503 to trigger exit",
+        )
+        return HttpServerResponse.empty({
+          status: 503,
+          headers: Headers.fromInput({
+            "Content-Type": "application/json",
+          }),
+        })
+      }
+
+      const result = yield* Queue.poll(eventQueue)
+
+      if (Option.isSome(result)) {
+        event = result.value
+      } else {
+        yield* Effect.sleep("100 millis")
+      }
+    }
+
+    yield* Effect.logDebug(
+      `Returning ${event.eventType} event to extension ${extension.name}`,
+    )
+
+    return yield* HttpServerResponse.json(event, {
+      status: 200,
+      headers: Headers.fromInput({
+        "Lambda-Extension-Event-Identifier": crypto.randomUUID(),
+      }),
+    })
+  })
+
+/**
+ * Handle POST /2020-01-01/extension/init/error
+ * Extensions call this to report initialization errors.
+ */
+const handleExtensionInitError = (state: RuntimeApiState) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+
+    const extensionIdHeader = Headers.get(
+      request.headers,
+      "lambda-extension-identifier",
+    )
+    const extensionId = Option.getOrElse(extensionIdHeader, () => "unknown")
+
+    const errorBody = yield* Effect.orElseSucceed(
+      request.json as Effect.Effect<
+        { errorMessage?: string; errorType?: string },
+        unknown
+      >,
+      (): { errorMessage?: string; errorType?: string } => ({}),
+    )
+
+    yield* Effect.logDebug(
+      `Extension ${extensionId} init error: ${errorBody.errorMessage ?? "unknown"}`,
+    )
+
+    // Report the error through the response queue
+    const initError: LambdaInitError = {
+      errorType: errorBody.errorType ?? "Extension.InitError",
+      errorMessage: errorBody.errorMessage ?? "Extension initialization failed",
+    }
+    yield* Queue.offer(state.responseQueue, initError)
+
+    return HttpServerResponse.empty({ status: 202 })
+  })
+
+/**
+ * Handle POST /2020-01-01/extension/exit/error
+ * Extensions call this to report errors before exiting.
+ */
+const handleExtensionExitError = () =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+
+    const extensionIdHeader = Headers.get(
+      request.headers,
+      "lambda-extension-identifier",
+    )
+    const extensionId = Option.getOrElse(extensionIdHeader, () => "unknown")
+
+    const errorBody = yield* Effect.orElseSucceed(
+      request.json as Effect.Effect<
+        { errorMessage?: string; errorType?: string },
+        unknown
+      >,
+      (): { errorMessage?: string; errorType?: string } => ({}),
+    )
+
+    yield* Effect.logDebug(
+      `Extension ${extensionId} exit error: ${errorBody.errorMessage ?? "unknown"}`,
+    )
+
+    // Just acknowledge - extension is exiting anyway
+    return HttpServerResponse.empty({ status: 202 })
+  })
+
+// ============================================================================
+// Router
+// ============================================================================
+
 /**
  * Create the Runtime API router for a given state.
  */
 const makeRuntimeApiRouter = (state: RuntimeApiState, pollTimeoutMs: number) =>
   HttpRouter.empty.pipe(
+    // Runtime API (2018-06-01)
     HttpRouter.get(
       "/2018-06-01/runtime/invocation/next",
       handleInvocationNext(state, pollTimeoutMs),
@@ -262,7 +517,40 @@ const makeRuntimeApiRouter = (state: RuntimeApiState, pollTimeoutMs: number) =>
       handleInvocationError(state),
     ),
     HttpRouter.post("/2018-06-01/runtime/init/error", handleInitError(state)),
+    // Extensions API (2020-01-01)
+    HttpRouter.post(
+      "/2020-01-01/extension/register",
+      handleExtensionRegister(state),
+    ),
+    HttpRouter.get(
+      "/2020-01-01/extension/event/next",
+      handleExtensionEventNext(state, pollTimeoutMs),
+    ),
+    HttpRouter.post(
+      "/2020-01-01/extension/init/error",
+      handleExtensionInitError(state),
+    ),
+    HttpRouter.post(
+      "/2020-01-01/extension/exit/error",
+      handleExtensionExitError(),
+    ),
   )
+
+/**
+ * Options for starting a Runtime API server.
+ */
+export interface RuntimeApiServerOptions {
+  /** How long to wait for an invocation before returning 503 */
+  pollTimeoutMs?: number
+  /** Function metadata for extension registration */
+  functionMetadata?: FunctionMetadata
+}
+
+const DEFAULT_FUNCTION_METADATA: FunctionMetadata = {
+  functionName: "local-function",
+  functionVersion: "$LATEST",
+  handler: "index.handler",
+}
 
 /**
  * Start a Runtime API server on an ephemeral port.
@@ -270,15 +558,18 @@ const makeRuntimeApiRouter = (state: RuntimeApiState, pollTimeoutMs: number) =>
  *
  * The server is scoped - it will be stopped when the scope closes.
  *
- * @param pollTimeoutMs - How long to wait for an invocation before returning 503.
- *                        Defaults to DEFAULT_POLL_TIMEOUT_MS.
+ * @param options - Server configuration options
  */
 export const startRuntimeApiServer = (
-  pollTimeoutMs: number = DEFAULT_POLL_TIMEOUT_MS,
+  options: RuntimeApiServerOptions = {},
 ): Effect.Effect<RuntimeApiServer, never, Scope.Scope> =>
   Effect.gen(function* () {
+    const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS
+    const functionMetadata =
+      options.functionMetadata ?? DEFAULT_FUNCTION_METADATA
+
     // Create state (queues) for this server
-    const state = yield* makeRuntimeApiState()
+    const state = yield* makeRuntimeApiState(functionMetadata)
 
     // Create router for this state
     const router = makeRuntimeApiRouter(state, pollTimeoutMs)
@@ -325,3 +616,60 @@ export const waitForResponse = (
   state: RuntimeApiState,
 ): Effect.Effect<LambdaResponse | LambdaError | LambdaInitError> =>
   Queue.take(state.responseQueue)
+
+/**
+ * Notify all registered extensions about an invocation.
+ * This sends an INVOKE event to all extensions that registered for it.
+ */
+export const notifyExtensionsInvoke = (
+  state: RuntimeApiState,
+  invocation: LambdaInvocation,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const extensions = yield* Ref.get(state.extensions)
+
+    const invokeEvent: ExtensionEvent = {
+      eventType: "INVOKE",
+      deadlineMs: invocation.deadlineMs,
+      requestId: invocation.requestId,
+      invokedFunctionArn: invocation.invokedFunctionArn,
+    }
+
+    // Send INVOKE event to all extensions that registered for it
+    for (const [, extState] of extensions) {
+      if (extState.extension.events.includes("INVOKE")) {
+        yield* Queue.offer(extState.eventQueue, invokeEvent)
+        yield* Effect.logDebug(
+          `Sent INVOKE event to extension ${extState.extension.name}`,
+        )
+      }
+    }
+  })
+
+/**
+ * Notify all registered extensions about shutdown.
+ * This sends a SHUTDOWN event to all extensions that registered for it.
+ */
+export const notifyExtensionsShutdown = (
+  state: RuntimeApiState,
+  reason: "SPINDOWN" | "TIMEOUT" | "FAILURE" = "SPINDOWN",
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const extensions = yield* Ref.get(state.extensions)
+
+    const shutdownEvent: ExtensionEvent = {
+      eventType: "SHUTDOWN",
+      shutdownReason: reason,
+      deadlineMs: Date.now() + 2000, // 2 second deadline for shutdown
+    }
+
+    // Send SHUTDOWN event to all extensions that registered for it
+    for (const [, extState] of extensions) {
+      if (extState.extension.events.includes("SHUTDOWN")) {
+        yield* Queue.offer(extState.eventQueue, shutdownEvent)
+        yield* Effect.logDebug(
+          `Sent SHUTDOWN event to extension ${extState.extension.name}`,
+        )
+      }
+    }
+  })

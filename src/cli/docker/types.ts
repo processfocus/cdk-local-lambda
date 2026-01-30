@@ -28,6 +28,20 @@ export interface DockerRunConfig {
   additionalArgs?: string[]
   /** Optional invocation context map for log prefixing (requestId -> { num }) */
   invocationContexts?: Map<string, { num: number }>
+  /** Override the container's entrypoint */
+  entrypoint?: string[]
+  /** Override the container's command (arguments after the image) */
+  command?: string[]
+}
+
+/**
+ * Docker image configuration from inspection.
+ */
+export interface DockerImageConfig {
+  /** The image's ENTRYPOINT */
+  entrypoint: string[] | null
+  /** The image's CMD */
+  cmd: string[] | null
 }
 
 /**
