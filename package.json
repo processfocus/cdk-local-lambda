@@ -24,6 +24,7 @@
     "pre-compile": "bun .projenrc.ts pre-compile",
     "release:trunk": "bun .projenrc.ts release:trunk",
     "test": "bun .projenrc.ts test",
+    "test:integration": "bun .projenrc.ts test:integration",
     "test:watch": "bun .projenrc.ts test:watch",
     "unbump": "bun .projenrc.ts unbump",
     "upgrade": "bun .projenrc.ts upgrade",

@@ -202,16 +202,25 @@
       "description": "Run tests",
       "steps": [
         {
-          "exec": "bun test"
+          "exec": "bun test ./test/*.test.ts ./test/shared/*.test.ts"
+        }
+      ]
+    },
+    "test:integration": {
+      "name": "test:integration",
+      "description": "Run integration tests (requires deployed stack)",
+      "steps": [
+        {
+          "exec": "bun test ./test/integration/*.test.ts"
         }
       ]
     },
     "test:watch": {
       "name": "test:watch",
-      "description": "Run tests in watch mode",
+      "description": "Run unit tests in watch mode",
       "steps": [
         {
-          "exec": "bun test --watch"
+          "exec": "bun test --watch ./test/*.test.ts ./test/shared/*.test.ts"
         }
       ]
     },
