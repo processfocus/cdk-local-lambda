@@ -95,6 +95,24 @@ To deploy the bootstrap stack separately:
 npx cll bootstrap --profile my-profile --region us-west-2
 ```
 
+## Options
+
+### Conditional Configuration
+
+Use `isInLocalMode()` to conditionally configure your constructs when running locally:
+
+```typescript
+import { isInLocalMode } from "cdk-local-lambda"
+
+new lambda.Function(this, "MyFunction", {
+  // Longer timeout for local debugging
+  timeout: isInLocalMode()
+    ? cdk.Duration.minutes(5)
+    : cdk.Duration.seconds(30),
+  // ... other props
+})
+```
+
 ## Troubleshooting
 
 ### "No functions found with live-lambda tags yet"

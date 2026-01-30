@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url"
 import * as cdk from "aws-cdk-lib"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs"
+import { isInLocalMode } from "cdk-local-lambda"
 import type { Construct } from "constructs"
 
 // ESM equivalent of __dirname
@@ -52,7 +53,10 @@ export class CompleteStack extends cdk.Stack {
       ),
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
+      // Conditional timeout: longer in local mode for debugging
+      timeout: isInLocalMode()
+        ? cdk.Duration.minutes(5)
+        : cdk.Duration.seconds(30),
       description: "Docker echo function - returns the input event",
     })
 
@@ -63,7 +67,10 @@ export class CompleteStack extends cdk.Stack {
       ),
       architecture: lambda.Architecture.X86_64,
       memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
+      // Conditional timeout: longer in local mode for debugging
+      timeout: isInLocalMode()
+        ? cdk.Duration.minutes(5)
+        : cdk.Duration.seconds(30),
       description: "Docker adder function - adds two numbers",
       environment: {
         TEST: "12345",
@@ -77,7 +84,10 @@ export class CompleteStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
+      // Conditional timeout: longer in local mode for debugging
+      timeout: isInLocalMode()
+        ? cdk.Duration.minutes(5)
+        : cdk.Duration.seconds(30),
       description: "TypeScript greeter function",
     })
 
@@ -94,7 +104,10 @@ export class CompleteStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.X86_64,
       memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
+      // Conditional timeout: longer in local mode for debugging
+      timeout: isInLocalMode()
+        ? cdk.Duration.minutes(5)
+        : cdk.Duration.seconds(30),
       description: "JavaScript calculator function",
     })
 

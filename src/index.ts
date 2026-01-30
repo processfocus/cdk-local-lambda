@@ -4,7 +4,7 @@
  * Exports:
  * - LiveLambdaAspect: CDK Aspect to transform Lambda functions
  * - applyLiveLambdaAspect: Helper to apply the aspect if CDK_LOCAL_LAMBDA=true
- * - isLiveModeEnabled: Check if live mode is enabled
+ * - isInLocalMode: Check if local mode is enabled
  * - CdkLocalLambdaBootstrapStack: The bootstrap stack for shared infrastructure
  *
  * For Docker function support, you must install the bootstrap BEFORE any CDK
@@ -23,7 +23,7 @@
 // Re-export the aspect and helpers
 export {
   applyLiveLambdaAspect,
-  isLiveModeEnabled,
+  isInLocalMode,
   LiveLambdaAspect,
   type LiveLambdaAspectProps,
 } from "./aspect/live-lambda-aspect.js"
