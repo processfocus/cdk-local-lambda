@@ -1,10 +1,10 @@
 # Run lambdas in CDK stack locally
 
-Run typescript and docker lambdas in a standard CDK stack
-locally. This improves the DX as you can edit lambdas and see changes
-and fixes immediately.
+Run typescript and docker lambdas in a CDK stack locally. This
+improves the DX as you can edit lambdas and see changes and fixes
+immediately.
 
-Only two minor changes to your CDK stack are needed.
+Needs two minor changes to a CDK stack, and the supplied cli to launch it.
 
 ## Installation
 
@@ -64,19 +64,19 @@ app.synth()
 The daemon deploys your stack with live mode enabled and runs your Lambda functions locally:
 
 ```bash
-npx cdk-local-lambda local
+npx cll local
 ```
 
 If you have multiple stacks:
 
 ```bash
-npx cdk-local-lambda local --stacks MyStack
+npx cll local --stacks MyStack
 ```
 
 Use `--profile` and `--region` to specify AWS credentials:
 
 ```bash
-npx cdk-local-lambda local --stacks MyStack --profile my-profile --region us-west-2
+npx cll local --stacks MyStack --profile my-profile --region us-west-2
 ```
 
 ### Manual bootstrap (optional)
@@ -84,7 +84,7 @@ npx cdk-local-lambda local --stacks MyStack --profile my-profile --region us-wes
 If you prefer to deploy the bootstrap stack separately:
 
 ```bash
-npx cdk-local-lambda bootstrap --profile my-profile --region us-west-2
+npx cll bootstrap --profile my-profile --region us-west-2
 ```
 
 ## Common issues
