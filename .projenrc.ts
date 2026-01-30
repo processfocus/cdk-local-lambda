@@ -2,7 +2,7 @@ import { javascript, typescript } from "projen"
 
 const project = new typescript.TypeScriptProject({
   defaultReleaseBranch: "trunk",
-  name: "local-live-lambda",
+  name: "cdk-local-lambda",
   packageManager: javascript.NodePackageManager.BUN,
   projenrcTs: true,
   eslint: false,
@@ -10,7 +10,7 @@ const project = new typescript.TypeScriptProject({
 
   // Package metadata
   description:
-    "CLI and CDK Aspect for running Lambda functions locally via AppSync Events WebSocket relay",
+    "Run lambdas in CDK stack locally to speed up debugging and improve your DX",
   repository: "https://github.com/processfocus/cdk-local-lambda.git",
   homepage: "https://github.com/processfocus/cdk-local-lambda#readme",
   authorName: "Berend de Boer",
@@ -119,7 +119,7 @@ project.addTask("test:integration", {
 })
 
 // Add bin entry for CLI
-project.addBins({ "local-lambda": "lib/cli/index.js" })
+project.addBins({ "cdk-local-lambda": "lib/cli/index.js" })
 
 // Set package type to module for ESM support
 project.package.addField("type", "module")

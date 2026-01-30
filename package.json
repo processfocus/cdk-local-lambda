@@ -1,12 +1,12 @@
 {
-  "name": "local-live-lambda",
-  "description": "CLI and CDK Aspect for running Lambda functions locally via AppSync Events WebSocket relay",
+  "name": "cdk-local-lambda",
+  "description": "Run lambdas in CDK stack locally to speed up debugging and improve your DX",
   "repository": {
     "type": "git",
     "url": "https://github.com/processfocus/cdk-local-lambda.git"
   },
   "bin": {
-    "local-lambda": "lib/cli/index.js"
+    "cdk-local-lambda": "lib/cli/index.js"
   },
   "scripts": {
     "build": "npx projen build",

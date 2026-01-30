@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * Effect CLI entry point for local-live-lambda.
+ * Effect CLI entry point for cdk-local-lambda.
  *
  * Commands:
  * - bootstrap: Deploy the CdkLocalLambdaBootstrapStack

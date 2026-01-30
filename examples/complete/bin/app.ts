@@ -10,17 +10,17 @@
  *
  * NOTE: When running under Bun, automatic capture requires preloading the
  * bootstrap (Bun snapshots CJS named exports during static ESM import linking).
- * Use: `CDK_LIVE=true bun --preload local-live-lambda/bootstrap bin/app.ts`
+ * Use: `CDK_LIVE=true bun --preload cdk-local-lambda/bootstrap bin/app.ts`
  * If you can't use preload, live debugging won't work.
  */
 
 // Install the hook FIRST - before any CDK imports
 // This patches Module._load to intercept aws-cdk-lib/aws-lambda and aws-lambda-nodejs
 // Note: In Bun, this only works reliably when preloaded (see note above).
-import "local-live-lambda/bootstrap"
+import "cdk-local-lambda/bootstrap"
 
 import * as cdk from "aws-cdk-lib"
-import { applyLiveLambdaAspect } from "local-live-lambda"
+import { applyLiveLambdaAspect } from "cdk-local-lambda"
 import { CompleteStack } from "../lib/complete-stack.js"
 
 const app = new cdk.App()

@@ -13,7 +13,7 @@
   "dependencies": {
     "aws-cdk-lib": "^2.234.0",
     "constructs": "^10.4.4",
-    "local-live-lambda": "file:../.."
+    "cdk-local-lambda": "file:../.."
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.147",

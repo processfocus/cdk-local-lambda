@@ -25,7 +25,7 @@ This matches Bun issue `oven-sh/bun#5511` ("snapshot" behavior for CJS named exp
 Run Bun with the bootstrap preloaded:
 
 ```bash
-CDK_LIVE=true bun --preload local-live-lambda/bootstrap bin/app.ts
+CDK_LIVE=true bun --preload cdk-local-lambda/bootstrap bin/app.ts
 ```
 
 Preloading ensures Bun snapshots the already-patched CommonJS exports.
@@ -35,7 +35,7 @@ Preloading ensures Bun snapshots the already-patched CommonJS exports.
 If you can't use `--preload`, make a tiny entry point that installs the bootstrap and then dynamically imports your real app:
 
 ```ts
-import "local-live-lambda/bootstrap"
+import "cdk-local-lambda/bootstrap"
 await import("./app.js")
 ```
 
@@ -44,7 +44,7 @@ Dynamic import happens after the patch code has run.
 ## Quick Verification
 
 ```bash
-CDK_LIVE=true bun --preload local-live-lambda/bootstrap -e "
+CDK_LIVE=true bun --preload cdk-local-lambda/bootstrap -e "
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 console.log('Patched:', NodejsFunction.__liveLambdaPatched) // true
 "

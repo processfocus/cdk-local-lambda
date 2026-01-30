@@ -246,8 +246,8 @@ export class LiveLambdaAspect implements cdk.IAspect {
       throw new Error(
         `[LiveLambda] No docker context path for "${functionId}". ` +
           `The bootstrap hook was not installed early enough. ` +
-          `Fix: import "local-live-lambda/bootstrap" before any CDK imports (Node.js), ` +
-          `or run Bun with "bun --preload local-live-lambda/bootstrap".`,
+          `Fix: import "cdk-local-lambda/bootstrap" before any CDK imports (Node.js), ` +
+          `or run Bun with "bun --preload cdk-local-lambda/bootstrap".`,
       )
     }
 

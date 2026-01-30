@@ -1,5 +1,5 @@
 /**
- * Main entry point for local-live-lambda.
+ * Main entry point for cdk-local-lambda.
  *
  * Exports:
  * - LiveLambdaAspect: CDK Aspect to transform Lambda functions
@@ -11,12 +11,12 @@
  * imports in your app entry point:
  *
  * ```typescript
- * import "local-live-lambda/bootstrap"
+ * import "cdk-local-lambda/bootstrap"
  * import * as cdk from "aws-cdk-lib"
  * ```
  *
  * Node.js: this is sufficient.
- * Bun: use `bun --preload local-live-lambda/bootstrap` (static ESM imports are
+ * Bun: use `bun --preload cdk-local-lambda/bootstrap` (static ESM imports are
  * linked before this module runs).
  */
 
