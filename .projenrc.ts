@@ -15,6 +15,17 @@ const project = new typescript.TypeScriptProject({
   homepage: "https://github.com/berenddeboer/cdk-local-lambda#readme",
   authorName: "Berend de Boer",
   bugsUrl: "https://github.com/berenddeboer/cdk-local-lambda/issues",
+  keywords: [
+    "aws",
+    "aws-cdk",
+    "lambda",
+    "cdk",
+    "local-development",
+    "serverless",
+    "appsync",
+    "docker",
+    "typescript",
+  ],
 
   // Enable npm publishing with trusted publishing (OIDC)
   releaseToNpm: true,
@@ -126,18 +137,6 @@ project.github
     "jobs.validate.steps.0.with.types",
     "ci\nfeat\nfix\nchore\nrefactor\ntest\nvendor",
   )
-
-// Add keywords for npm discoverability
-project.addKeywords(
-  "aws",
-  "lambda",
-  "cdk",
-  "local-development",
-  "serverless",
-  "appsync",
-  "docker",
-  "typescript",
-)
 
 // Specify files to include in npm package
 project.package.addField("files", ["lib", "LICENSE", "README.md"])

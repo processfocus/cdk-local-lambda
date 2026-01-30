@@ -71,6 +71,7 @@
   "keywords": [
     "appsync",
     "aws",
+    "aws-cdk",
     "cdk",
     "docker",
     "lambda",
