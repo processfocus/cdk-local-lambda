@@ -43,18 +43,24 @@ const project = new typescript.TypeScriptProject({
     compilerOptions: {
       module: "ESNext",
       moduleResolution: javascript.TypeScriptModuleResolution.BUNDLER,
-      target: "ES2022",
-      lib: ["ES2022"],
+      target: "ES2024",
+      lib: ["ES2024"],
       skipLibCheck: true, // Skip type checking of declaration files to avoid @effect/platform-bun errors
+      noUncheckedIndexedAccess: true,
+      noPropertyAccessFromIndexSignature: true,
+      exactOptionalPropertyTypes: true,
     },
   },
   tsconfigDev: {
     compilerOptions: {
       module: "ESNext",
       moduleResolution: javascript.TypeScriptModuleResolution.BUNDLER,
-      target: "ES2022",
-      lib: ["ES2022"],
+      target: "ES2024",
+      lib: ["ES2024"],
       skipLibCheck: true,
+      noUncheckedIndexedAccess: true,
+      noPropertyAccessFromIndexSignature: true,
+      exactOptionalPropertyTypes: true,
     },
   },
 

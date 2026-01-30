@@ -9,7 +9,7 @@
 
 import { beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test"
 import { BunContext } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Scope } from "effect"
+import { Effect } from "effect"
 import {
   Docker,
   DockerLive,

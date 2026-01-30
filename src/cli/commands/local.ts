@@ -453,11 +453,9 @@ const startFunctionContainer = (
 
     // Use Effect.forkDaemon to run the container independently with context preserved
     // Effect.scoped provides the scope needed by docker.run
-    const fiber = yield* docker.run(containerConfig).pipe(
-      Effect.scoped,
-      Effect.map(() => undefined as void),
-      Effect.forkDaemon,
-    )
+    const fiber = yield* docker
+      .run(containerConfig)
+      .pipe(Effect.scoped, Effect.ignore, Effect.forkDaemon)
 
     return fiber
   }).pipe(Effect.provide(DockerLive))
@@ -1237,7 +1235,7 @@ const rebuildDockerContainer = (
           }
         }),
       ),
-      Effect.map(() => undefined as void),
+      Effect.ignore,
       Effect.catchAll((error) =>
         Effect.logError(`Container error for ${functionId}: ${error}`),
       ),
@@ -1472,7 +1470,6 @@ const startCdkWatch = (
     // State tracking for deploy status messages
     let isDeploying = false
     let isFirstDeploy = true
-    let outputBuffer = ""
     const discoveredStacks = new Set<string>()
 
     // Patterns to detect CDK watch behavior
@@ -1492,8 +1489,6 @@ const startCdkWatch = (
     yield* outputStream.pipe(
       Stream.runForEach((line) =>
         Effect.gen(function* () {
-          outputBuffer += line + "\n"
-
           // Log all output at debug level
           yield* Effect.logDebug(`[CDK] ${line}`)
 
@@ -1520,14 +1515,13 @@ const startCdkWatch = (
 
           // Detect errors - output immediately
           if (errorPattern.test(line)) {
-            yield* Effect.sync(() => process.stderr.write(line + "\n"))
+            yield* Effect.sync(() => process.stderr.write(`${line}\n`))
           }
 
           // Check for deploy completion (only trigger once per deploy cycle)
           if (isDeploying && deployCompletePattern.test(line)) {
             isDeploying = false
             isFirstDeploy = false
-            outputBuffer = ""
             yield* Effect.logInfo("[CDK] Deploy complete")
             // Small delay to ensure AWS has propagated the changes
             yield* Effect.sleep("1 second")
@@ -1537,7 +1531,6 @@ const startCdkWatch = (
           // Check for no changes
           if (noChangesPattern.test(line)) {
             isDeploying = false
-            outputBuffer = ""
           }
         }),
       ),
@@ -1816,8 +1809,8 @@ export const localCommand = Command.make(
           // Subscribe using forkDaemon to run independently with context preserved
           // Route to Docker or Node.js handler based on function type
           if (isDocker) {
-            yield* appSyncClient!
-              .subscribeToInvocations(invocationChannel)
+            yield* appSyncClient
+              ?.subscribeToInvocations(invocationChannel)
               .pipe(
                 Stream.runForEach((invocation) =>
                   handleDockerInvocation(
@@ -1842,8 +1835,8 @@ export const localCommand = Command.make(
                 Effect.forkDaemon,
               )
           } else {
-            yield* appSyncClient!
-              .subscribeToInvocations(invocationChannel)
+            yield* appSyncClient
+              ?.subscribeToInvocations(invocationChannel)
               .pipe(
                 Stream.runForEach((invocation) =>
                   handleNodejsInvocation(

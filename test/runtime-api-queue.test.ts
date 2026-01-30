@@ -22,7 +22,6 @@ import { Effect, Exit, Scope } from "effect"
 import {
   queueInvocation,
   type RuntimeApiServer,
-  type RuntimeApiState,
   startRuntimeApiServer,
   waitForResponse,
 } from "../src/cli/runtime-api/server.js"
