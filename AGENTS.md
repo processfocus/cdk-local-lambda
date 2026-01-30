@@ -50,8 +50,11 @@ bunx biome check src/cli/commands/local.ts
 ### Test
 
 ```bash
-# Run all tests
+# Run unit tests only (default - fast, no external dependencies)
 bun run test
+
+# Run integration tests (requires deployed bootstrap stack)
+bun run test:integration
 
 # Run a single test file
 bun test test/hello.test.ts
@@ -59,7 +62,7 @@ bun test test/hello.test.ts
 # Run a single test by name/pattern
 bun test --test-name-pattern "should transform lambda"
 
-# Watch mode
+# Watch mode (unit tests only)
 bun test --watch test/hello.test.ts
 
 # Coverage
