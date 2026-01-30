@@ -11,10 +11,10 @@ const project = new typescript.TypeScriptProject({
   // Package metadata
   description:
     "CLI and CDK Aspect for running Lambda functions locally via AppSync Events WebSocket relay",
-  repository: "https://github.com/berenddeboer/cdk-local-lambda.git",
-  homepage: "https://github.com/berenddeboer/cdk-local-lambda#readme",
+  repository: "https://github.com/processfocus/cdk-local-lambda.git",
+  homepage: "https://github.com/processfocus/cdk-local-lambda#readme",
   authorName: "Berend de Boer",
-  bugsUrl: "https://github.com/berenddeboer/cdk-local-lambda/issues",
+  bugsUrl: "https://github.com/processfocus/cdk-local-lambda/issues",
   keywords: [
     "aws",
     "aws-cdk",

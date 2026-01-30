@@ -3,7 +3,7 @@
   "description": "CLI and CDK Aspect for running Lambda functions locally via AppSync Events WebSocket relay",
   "repository": {
     "type": "git",
-    "url": "https://github.com/berenddeboer/cdk-local-lambda.git"
+    "url": "https://github.com/processfocus/cdk-local-lambda.git"
   },
   "bin": {
     "local-lambda": "lib/cli/index.js"
@@ -81,13 +81,13 @@
   ],
   "main": "lib/index.js",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/berenddeboer/cdk-local-lambda#readme",
+  "homepage": "https://github.com/processfocus/cdk-local-lambda#readme",
   "publishConfig": {
     "access": "public"
   },
   "version": "0.0.0",
   "bugs": {
-    "url": "https://github.com/berenddeboer/cdk-local-lambda/issues"
+    "url": "https://github.com/processfocus/cdk-local-lambda/issues"
   },
   "types": "lib/index.d.ts",
   "type": "module",
