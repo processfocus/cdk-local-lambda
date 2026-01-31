@@ -1,4 +1,4 @@
-import { javascript, typescript } from "projen"
+import { github, javascript, typescript } from "projen"
 
 const project = new typescript.TypeScriptProject({
   defaultReleaseBranch: "trunk",
@@ -33,6 +33,15 @@ const project = new typescript.TypeScriptProject({
   npmProvenance: true,
   workflowNodeVersion: "24.x",
   npmTrustedPublishing: true,
+
+  // Use GITHUB_TOKEN for dependency upgrades (no separate PAT needed)
+  depsUpgradeOptions: {
+    workflowOptions: {
+      projenCredentials: github.GithubCredentials.fromPersonalAccessToken({
+        secret: "GITHUB_TOKEN",
+      }),
+    },
+  },
 
   // Enable ESM package type
   entrypoint: "lib/index.js",
@@ -143,6 +152,14 @@ project.github
     "jobs.validate.steps.0.with.types",
     "ci\nfeat\nfix\nchore\nrefactor\ntest\nvendor",
   )
+
+// Fix upgrade-trunk workflow permissions for GITHUB_TOKEN to create PRs
+project.github
+  ?.tryFindWorkflow("upgrade-trunk")
+  ?.file?.addOverride("jobs.pr.permissions", {
+    contents: "write",
+    "pull-requests": "write",
+  })
 
 // Specify files to include in npm package
 project.package.addField("files", ["lib", "LICENSE", "README.md"])
