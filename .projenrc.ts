@@ -150,7 +150,7 @@ project.github
   ?.tryFindWorkflow("pull-request-lint")
   ?.file?.addOverride(
     "jobs.validate.steps.0.with.types",
-    "ci\nfeat\nfix\nchore\nrefactor\ntest\nvendor",
+    "ci\ndocs\nfeat\nfix\nchore\nrefactor\ntest\nvendor",
   )
 
 // Fix upgrade-trunk workflow permissions for GITHUB_TOKEN to create PRs
