@@ -11,6 +11,12 @@ Run Lambda functions from your CDK stack locally. Edit your code and see changes
 | Python | Not yet supported |
 | Java | Not yet supported |
 
+## Comparison with SST v2
+
+This project provides similar live Lambda development capabilities to [SST v2's Live Lambda Dev](https://v2.sst.dev/live-lambda-development), but with a key difference: **cdk-local-lambda works with vanilla CDK**.
+
+SST v2 requires adopting SST's stack conventions and constructs. With cdk-local-lambda, you keep your existing CDK code as-is—just add the bootstrap import and apply the aspect.
+
 ## Installation
 
 ```bash
