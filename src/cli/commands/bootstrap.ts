@@ -1,7 +1,27 @@
 import { execSync } from "node:child_process"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
 import { BOOTSTRAP_STACK_NAME } from "../../shared/types.js"
+
+// ESM equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+/**
+ * Get the path to the CDK app file, handling both source (.ts) and compiled (.js) cases.
+ * Bun can run both directly.
+ */
+function getCdkAppPath(): string {
+  const jsPath = path.join(__dirname, "..", "cdk-app.js")
+  if (fs.existsSync(jsPath)) {
+    return jsPath
+  }
+  // Fall back to .ts for development when running from source
+  return path.join(__dirname, "..", "cdk-app.ts")
+}
 
 // Common options
 const profileOption = Options.text("profile").pipe(
@@ -24,12 +44,17 @@ export const bootstrapCommand = Command.make(
     Effect.gen(function* () {
       yield* Console.log("Deploying bootstrap stack...")
 
+      // Path to the CDK app that defines the bootstrap stack
+      const cdkAppPath = getCdkAppPath()
+
       // Build CDK deploy command with options
       const args = [
         "npx",
         "cdk",
         "deploy",
         BOOTSTRAP_STACK_NAME,
+        "--app",
+        `"bun run ${cdkAppPath}"`,
         "--require-approval",
         "never",
       ]

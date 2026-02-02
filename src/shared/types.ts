@@ -30,7 +30,7 @@ export const BOOTSTRAP_STACK_NAME = "CdkLocalLambdaBootstrapStack"
  * Current version of the bootstrap stack.
  * Increment this when making breaking changes to the bootstrap infrastructure.
  */
-export const BOOTSTRAP_VERSION = "1"
+export const BOOTSTRAP_VERSION = "2"
 
 /**
  * Environment variable names used by the bridge handler

@@ -163,7 +163,18 @@
     },
     "post-compile": {
       "name": "post-compile",
-      "description": "Runs after successful compilation"
+      "description": "Runs after successful compilation",
+      "steps": [
+        {
+          "exec": "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*"
+        },
+        {
+          "exec": "bun build src/functions/bridge-docker/runtime.ts --outfile=src/functions/bridge-docker/runtime.js --target=node --format=cjs --bundle"
+        },
+        {
+          "exec": "mkdir -p lib/functions/bridge-docker && cp src/functions/bridge-docker/* lib/functions/bridge-docker/"
+        }
+      ]
     },
     "post-upgrade": {
       "name": "post-upgrade",
