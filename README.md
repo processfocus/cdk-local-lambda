@@ -87,10 +87,37 @@ For multiple stacks, specify which one to use:
 npx cll local --stacks MyStack
 ```
 
-To specify AWS credentials:
+When ready, you'll see:
+
+```
+[15:09:16.979] INFO: [Local] Starting local Lambda development...
+[15:09:19.747] INFO: [CDK] Deploying...
+[15:09:19.757] INFO: [Local] Press Ctrl+C to stop
+[15:09:25.870] INFO: [CDK] Deploy complete
+[15:09:26.878] INFO: [Local] Discovering functions...
+[15:09:30.837] INFO: [Local] Functions: JsCalculatorBD1C3822 (node), DockerAdder757B287D (docker), TsGreeter58FA51CD (node)
+[15:09:30.841] INFO: [Local] Ready for invocations
+```
+
+Now invoke your Lambda normally via the AWS CLI or SDK:
 
 ```bash
-npx cll local --stacks MyStack --profile my-profile --region us-west-2
+aws lambda invoke --function-name MyStack-TsGreeter58FA51CD-EiQlVgIoZhz4 \
+  --payload '{"name": "World"}' \
+  --cli-binary-format raw-in-base64-out \
+  /dev/stdout
+```
+
+```json
+{"message":"Hello, World!","timestamp":"2026-02-02T02:10:11.920Z"}
+```
+
+The local console shows each invocation with any `console.log` output from your function:
+
+```
+[1] ┌── MyStack-TsGreeter58FA51CD-EiQlVgIoZhz4 ──
+[1] [Greeter] Received greeting request for: World
+[1] └── ✓ Done (892ms) ──
 ```
 
 ### Manual bootstrap (optional)
@@ -117,6 +144,14 @@ new lambda.Function(this, "MyFunction", {
     : cdk.Duration.seconds(30),
   // ... other props
 })
+```
+
+### Credentials
+
+Run daemon with a specific credential and region:
+
+```bash
+npx cll local --stacks MyStack --profile my-profile --region us-west-2
 ```
 
 ## Troubleshooting
