@@ -46,4 +46,5 @@ jspm_packages/
 cdk.out/
 .envrc
 test-reports/
+src/functions/bridge-docker/runtime.js
 !/.projenrc.ts

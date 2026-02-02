@@ -107,6 +107,21 @@ const project = new typescript.TypeScriptProject({
 // See: https://github.com/projen/projen/issues/3388
 project.defaultTask?.reset("tsx .projenrc.ts")
 
+// Bundle bridge handler after TypeScript compilation
+// This pre-bundles the bridge so users don't need to compile it at CDK synth time
+project.postCompileTask.exec(
+  "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*",
+)
+
+// Bundle Docker bridge runtime to src/, then copy whole directory to lib/
+// This way __dirname/../functions/bridge-docker works from both src/ and lib/
+project.postCompileTask.exec(
+  "bun build src/functions/bridge-docker/runtime.ts --outfile=src/functions/bridge-docker/runtime.js --target=node --format=cjs --bundle",
+)
+project.postCompileTask.exec(
+  "mkdir -p lib/functions/bridge-docker && cp src/functions/bridge-docker/* lib/functions/bridge-docker/",
+)
+
 // Add Biome for linting and formatting
 project.addDevDeps("@biomejs/biome")
 project.addTask("lint", {
@@ -139,8 +154,13 @@ project.addBins({ cll: "lib/cli/index.js" })
 // Set package type to module for ESM support
 project.package.addField("type", "module")
 
-// Add CDK, direnv, and test output files to gitignore
-project.gitignore.addPatterns("cdk.out/", ".envrc", "test-reports/")
+// Add CDK, direnv, test output, and build artifacts to gitignore
+project.gitignore.addPatterns(
+  "cdk.out/",
+  ".envrc",
+  "test-reports/",
+  "src/functions/bridge-docker/runtime.js",
+)
 
 // Add husky prepare script for git hooks
 project.package.setScript("prepare", "husky")
