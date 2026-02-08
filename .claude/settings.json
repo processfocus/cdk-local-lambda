@@ -1,12 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(aws ssm:*)",
       "Bash(aws appsync:*)",
-      "Bash(grep:*)",
-      "Bash(tree:*)",
+      "Bash(aws ssm:*)",
       "Bash(bun:*)",
       "Bash(bunx:*)",
+      "Bash(grep:*)",
+      "Bash(npm info:*)",
+      "Bash(tree:*)",
+      "Bash(xargs:*)",
       "WebFetch(domain:effect-ts.github.io)",
       "WebFetch(domain:effect.website)",
       "WebFetch(domain:www.effect.solutions)",

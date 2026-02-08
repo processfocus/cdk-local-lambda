@@ -72,7 +72,7 @@ function parseHandler(handlerPath: string): {
 
 /**
  * Resolve and load the handler function.
- * Tries common extensions: .ts, .js, .mjs, .cjs (Bun handles all natively)
+ * Tries common extensions: .ts, .js, .mjs, .cjs (Node.js 24 handles TypeScript natively)
  */
 async function loadHandler(
   handlerPath: string,
@@ -80,7 +80,7 @@ async function loadHandler(
 ): Promise<(event: unknown, context: Context) => Promise<unknown>> {
   const { modulePath, exportName } = parseHandler(handlerPath)
 
-  // Extensions to try (Bun supports all natively)
+  // Extensions to try (Node.js 24 supports TypeScript natively)
   const extensions = [".ts", ".js", ".mjs", ".cjs", ""]
 
   let loadedModule: Record<string, unknown> | undefined
@@ -253,7 +253,7 @@ async function postInitError(error: Error): Promise<void> {
  */
 async function main(): Promise<void> {
   // Load handler once at startup
-  // Note: bun --watch automatically tracks dynamic imports and restarts when they change
+  // Note: node --watch automatically tracks dynamic imports and restarts when they change
   let handler: (event: unknown, context: Context) => Promise<unknown>
   try {
     handler = await loadHandler(HANDLER!, PROJECT_ROOT)
