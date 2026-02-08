@@ -11,15 +11,17 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 /**
- * Get the path to the CDK app file, handling both source (.ts) and compiled (.js) cases.
- * Bun can run both directly.
+ * Get the path to the CDK app file.
+ * When running from lib/, use the sibling cdk-app.js.
+ * When running from src/, fall back to the sibling cdk-app.ts.
  */
 function getCdkAppPath(): string {
+  // Check for compiled version in same directory (lib/cli/)
   const jsPath = path.join(__dirname, "..", "cdk-app.js")
   if (fs.existsSync(jsPath)) {
     return jsPath
   }
-  // Fall back to .ts for development when running from source
+  // Fall back to TypeScript source for local development (src/cli/)
   return path.join(__dirname, "..", "cdk-app.ts")
 }
 
@@ -54,7 +56,7 @@ export const bootstrapCommand = Command.make(
         "deploy",
         BOOTSTRAP_STACK_NAME,
         "--app",
-        `"bun run ${cdkAppPath}"`,
+        `"node ${cdkAppPath}"`,
         "--require-approval",
         "never",
       ]

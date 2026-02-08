@@ -77,7 +77,7 @@ const project = new typescript.TypeScriptProject({
     "effect",
     "@effect/cli",
     "@effect/platform",
-    "@effect/platform-bun",
+    "@effect/platform-node",
     "aws-cdk-lib",
     // constructs is added automatically as a peer dep of aws-cdk-lib
     // AWS SDK for bridge functions
@@ -97,7 +97,6 @@ const project = new typescript.TypeScriptProject({
     "@types/aws-lambda",
     "@types/node@24",
     "@types/ws",
-    "@types/bun",
     "husky",
     "tsx", // Use tsx instead of ts-node (ts-node fails with ESM + Node 18.19+)
   ],

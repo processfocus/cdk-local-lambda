@@ -11,11 +11,12 @@
  * @see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html
  */
 
+import { createServer } from "node:http"
 import * as Headers from "@effect/platform/Headers"
 import * as HttpRouter from "@effect/platform/HttpRouter"
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest"
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse"
-import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import { Effect, HashMap, Option, Queue, Ref, type Scope } from "effect"
 import type {
   ExtensionEvent,
@@ -101,15 +102,13 @@ export const makeRuntimeApiState = (functionMetadata: FunctionMetadata) =>
  * Their Runtime API implementation can hold HTTP connections open indefinitely
  * because they control the entire infrastructure end-to-end.
  *
- * In local development, we're constrained by HTTP server limitations:
- * - Bun's maximum `idleTimeout` is 255 seconds (~4.25 minutes)
- * - This is a practical limit to prevent resource exhaustion in HTTP servers
- * - When the timeout expires, Bun forcefully closes the connection
- * - The Lambda RIC interprets this as a fatal "No Response from endpoint" error
+ * In local development, we're constrained by HTTP server limitations.
+ * Node.js 24's default requestTimeout is 300 seconds (5 minutes), which is
+ * sufficient for our 240 second poll timeout.
  *
- * Our solution: timeout slightly before Bun does (240s vs 255s) and return
- * HTTP 503, which causes the RIC to exit gracefully. The container will be
- * automatically restarted on the next invocation (~2 seconds for warm images).
+ * Our solution: use a 240s timeout and return HTTP 503, which causes the RIC
+ * to exit gracefully. The container will be automatically restarted on the next
+ * invocation (~2 seconds for warm images).
  *
  * This is an inherent limitation of local Lambda emulation - AWS's purpose-built
  * infrastructure simply doesn't have the same timeout constraints.
@@ -575,11 +574,10 @@ export const startRuntimeApiServer = (
     const router = makeRuntimeApiRouter(state, pollTimeoutMs)
 
     // Create HTTP server on ephemeral port (port: 0)
-    const server = yield* BunHttpServer.make({
+    const server = yield* NodeHttpServer.make(() => createServer(), {
       port: 0,
-      hostname: "0.0.0.0",
-      idleTimeout: 255, // Max allowed by Bun (4.25 minutes) for long-polling
-    })
+      host: "0.0.0.0",
+    }).pipe(Effect.orDie)
 
     // Start serving the router
     yield* server.serve(router)

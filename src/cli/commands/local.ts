@@ -26,7 +26,7 @@ import {
   Command as PlatformCommand,
 } from "@effect/platform"
 import type { Process as EffectProcess } from "@effect/platform/CommandExecutor"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import {
   Duration,
   Effect,
@@ -208,7 +208,7 @@ const runBootstrap = (options: {
       "--require-approval",
       "never",
       "--app",
-      `bun ${cdkAppPath}`,
+      `node ${cdkAppPath}`,
     ]
 
     if (options.profile) {
@@ -629,13 +629,8 @@ const startNodejsWorker = (
       "nodejs-runtime.js",
     )
 
-    // Get absolute path to bun for pure env isolation (no PATH dependency)
-    const bunPath = Bun.which("bun")
-    if (!bunPath) {
-      return yield* Effect.fail(
-        new Error("Could not find 'bun' executable in PATH"),
-      )
-    }
+    // Use current Node.js executable for pure env isolation (no PATH dependency)
+    const nodePath = process.execPath
 
     // Build environment for the worker process
     // Pure isolation: only env from bridge + local overrides, no local PATH/HOME
@@ -655,10 +650,10 @@ const startNodejsWorker = (
     )
     yield* Effect.logDebug(`[Local] Handler: ${fn.localHandler}`)
 
-    // Spawn Bun with --watch to automatically restart when handler files change
+    // Spawn Node.js with --watch to automatically restart when handler files change
     // This enables hot-reload without needing to restart the daemon
-    // Use absolute bun path for pure env isolation (no PATH dependency)
-    const workerProcess = spawn(bunPath, ["--watch", runtimeWrapperPath], {
+    // Use current Node.js executable for pure env isolation (no PATH dependency)
+    const workerProcess = spawn(nodePath, ["--watch", runtimeWrapperPath], {
       cwd: projectRoot,
       env: workerEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -2010,7 +2005,7 @@ export const localCommand = Command.make(
             yield* Scope.close(serverScope, Exit.void)
           }).pipe(
             Effect.provide(DockerLive),
-            Effect.provide(BunContext.layer),
+            Effect.provide(NodeContext.layer),
             Effect.provide(Logger.pretty),
             Effect.provide(Logger.minimumLogLevel(logLevel)),
           ),

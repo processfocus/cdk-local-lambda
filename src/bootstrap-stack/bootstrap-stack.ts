@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import * as cdk from "aws-cdk-lib"
@@ -13,6 +14,35 @@ import { BOOTSTRAP_VERSION, SSM_BASE_PATH } from "../shared/types.js"
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+/**
+ * Get the path to the bridge-docker directory containing Docker assets.
+ * Handles both compiled (lib/) and source (src/) cases.
+ * Checks for the presence of Dockerfile.arm64 to determine valid path.
+ */
+function getBridgeDockerPath(): string {
+  // When running from lib/bootstrap-stack/, look in lib/functions/ first
+  // but verify it has the Docker assets (not just compiled .js files)
+  const libPath = path.join(__dirname, "..", "functions", "bridge-docker")
+  if (fs.existsSync(path.join(libPath, "Dockerfile.arm64"))) {
+    return libPath
+  }
+  // Fall back to src/functions/ for development
+  const srcPath = path.join(
+    __dirname,
+    "..",
+    "..",
+    "src",
+    "functions",
+    "bridge-docker",
+  )
+  if (fs.existsSync(path.join(srcPath, "Dockerfile.arm64"))) {
+    return srcPath
+  }
+  throw new Error(
+    "Cannot find bridge-docker directory with Docker assets (checked lib/functions/ and src/functions/)",
+  )
+}
 
 /**
  * Properties for the LiveLambdaBootstrapStack
@@ -295,12 +325,7 @@ export class CdkLocalLambdaBootstrapStack extends cdk.Stack {
   } {
     // Points to functions/bridge-docker relative to this file (works from both src/ and lib/)
     // Contains pre-bundled runtime.js, Dockerfiles, and bootstrap.sh
-    const bridgeDockerPath = path.join(
-      __dirname,
-      "..",
-      "functions",
-      "bridge-docker",
-    )
+    const bridgeDockerPath = getBridgeDockerPath()
 
     // Build ARM64 image using CDK Docker image asset
     const arm64Image = new ecrAssets.DockerImageAsset(

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 /**
  * Effect CLI entry point for cdk-local-lambda.
@@ -9,7 +9,7 @@
  */
 
 import { Command } from "@effect/cli"
-import { BunContext, BunRuntime } from "@effect/platform-bun"
+import { NodeContext, NodeRuntime } from "@effect/platform-node"
 import { Effect } from "effect"
 import { bootstrapCommand } from "./commands/bootstrap.js"
 import { localCommand } from "./commands/local.js"
@@ -30,4 +30,4 @@ const cli = Command.run(rootCommand, {
   version: "0.1.0",
 })
 
-cli(process.argv).pipe(Effect.provide(BunContext.layer), BunRuntime.runMain)
+cli(process.argv).pipe(Effect.provide(NodeContext.layer), NodeRuntime.runMain)

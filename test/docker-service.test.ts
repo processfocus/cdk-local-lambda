@@ -8,7 +8,7 @@
  */
 
 import { beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import { Effect } from "effect"
 import {
   Docker,
@@ -190,7 +190,7 @@ describe("Docker Service", () => {
       const result = await Effect.runPromise(
         program.pipe(
           Effect.provide(DockerLive),
-          Effect.provide(BunContext.layer),
+          Effect.provide(NodeContext.layer),
         ),
       )
 
@@ -218,7 +218,7 @@ describe("Docker Service", () => {
       const result = await Effect.runPromise(
         program.pipe(
           Effect.provide(DockerLive),
-          Effect.provide(BunContext.layer),
+          Effect.provide(NodeContext.layer),
         ),
       )
 
@@ -244,7 +244,7 @@ describe("Docker Service", () => {
       const result = await Effect.runPromise(
         program.pipe(
           Effect.provide(DockerLive),
-          Effect.provide(BunContext.layer),
+          Effect.provide(NodeContext.layer),
         ),
       )
 
@@ -267,7 +267,7 @@ describe("Docker Service", () => {
       await Effect.runPromise(
         program.pipe(
           Effect.provide(DockerLive),
-          Effect.provide(BunContext.layer),
+          Effect.provide(NodeContext.layer),
         ),
       )
     })
@@ -297,7 +297,7 @@ describe("Docker Service", () => {
       const result = await Effect.runPromise(
         program.pipe(
           Effect.provide(DockerLive),
-          Effect.provide(BunContext.layer),
+          Effect.provide(NodeContext.layer),
         ),
       )
 
