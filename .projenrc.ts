@@ -62,6 +62,8 @@ const project = new typescript.TypeScriptProject({
   },
   tsconfigDev: {
     compilerOptions: {
+      rootDir: ".",
+      outDir: "lib",
       module: "ESNext",
       moduleResolution: javascript.TypeScriptModuleResolution.BUNDLER,
       target: "ES2024",
@@ -108,8 +110,9 @@ project.defaultTask?.reset("tsx .projenrc.ts")
 
 // Bundle bridge handler after TypeScript compilation
 // This pre-bundles the bridge so users don't need to compile it at CDK synth time
+// Using ESM format with .mjs extension for proper Lambda module loading
 project.postCompileTask.exec(
-  "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*",
+  "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.mjs --target=node --format=esm --bundle --external=@aws-sdk/*",
 )
 
 // Bundle Docker bridge runtime to src/, then copy whole directory to lib/
