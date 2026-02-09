@@ -12,6 +12,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process"
+import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -74,6 +75,23 @@ import type {
   LambdaInvocation,
   LambdaResponse,
 } from "../runtime-api/types.js"
+
+/**
+ * Get the path to the CDK app file.
+ * When running from lib/, use the sibling cdk-app.js.
+ * When running from src/, fall back to the sibling cdk-app.ts.
+ */
+const getCdkAppPath = (): string => {
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  // Check for compiled version in same directory (lib/cli/)
+  const jsPath = path.join(__dirname, "..", "cdk-app.js")
+  if (fs.existsSync(jsPath)) {
+    return jsPath
+  }
+  // Fall back to TypeScript source for local development (src/cli/)
+  return path.join(__dirname, "..", "cdk-app.ts")
+}
 
 /**
  * Discovered Lambda function info.
@@ -196,10 +214,8 @@ const runBootstrap = (options: {
   Effect.gen(function* () {
     yield* Effect.logInfo("Running bootstrap stack deployment...")
 
-    // Resolve the CDK app path relative to this module
-    const __filename = fileURLToPath(import.meta.url)
-    const __dirname = path.dirname(__filename)
-    const cdkAppPath = path.resolve(__dirname, "..", "cdk-app.js")
+    // Resolve the CDK app path (handles both compiled and source)
+    const cdkAppPath = getCdkAppPath()
 
     const args = [
       "cdk",

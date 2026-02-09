@@ -166,7 +166,7 @@
       "description": "Runs after successful compilation",
       "steps": [
         {
-          "exec": "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.js --target=node --format=cjs --bundle --external=@aws-sdk/*"
+          "exec": "mkdir -p lib/functions/bridge && bun build src/functions/bridge/handler.ts --outfile=lib/functions/bridge/index.mjs --target=node --format=esm --bundle --external=@aws-sdk/*"
         },
         {
           "exec": "bun build src/functions/bridge-docker/runtime.ts --outfile=src/functions/bridge-docker/runtime.js --target=node --format=cjs --bundle"

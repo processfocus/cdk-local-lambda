@@ -4,7 +4,11 @@ import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
-import { BOOTSTRAP_STACK_NAME } from "../../shared/types.js"
+import {
+  BOOTSTRAP_STACK_NAME,
+  BOOTSTRAP_VERSION,
+  SSM_BASE_PATH,
+} from "../../shared/types.js"
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -37,14 +41,78 @@ const regionOption = Options.text("region").pipe(
 )
 
 /**
+ * Get the currently deployed bootstrap version from SSM.
+ * Returns undefined if not deployed or parameter doesn't exist.
+ */
+function getDeployedVersion(
+  profile: Option.Option<string>,
+  region: Option.Option<string>,
+): string | undefined {
+  const env = { ...process.env }
+  if (Option.isSome(region)) {
+    env.AWS_REGION = region.value
+    env.CDK_DEFAULT_REGION = region.value
+  }
+
+  const args = [
+    "ssm",
+    "get-parameter",
+    "--name",
+    `${SSM_BASE_PATH}/hnb659fds/version`,
+    "--query",
+    "Parameter.Value",
+    "--output",
+    "text",
+  ]
+  if (Option.isSome(profile)) {
+    args.push("--profile", profile.value)
+  }
+
+  try {
+    const result = execSync(`aws ${args.join(" ")}`, {
+      env,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+    })
+    return result.trim()
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Bootstrap command - deploys the CdkLocalLambdaBootstrapStack
+ * Only deploys if the required version is newer than the deployed version.
+ * Skips deployment if deployed version is already equal or newer.
  */
 export const bootstrapCommand = Command.make(
   "bootstrap",
   { profile: profileOption, region: regionOption },
   ({ profile, region }) =>
     Effect.gen(function* () {
-      yield* Console.log("Deploying bootstrap stack...")
+      yield* Console.log("Checking bootstrap stack version...")
+
+      const deployedVersion = getDeployedVersion(profile, region)
+      const requiredVersion = BOOTSTRAP_VERSION
+
+      if (deployedVersion) {
+        const deployed = parseInt(deployedVersion, 10)
+        const required = parseInt(requiredVersion, 10)
+
+        if (deployed >= required) {
+          yield* Console.log(
+            `Bootstrap stack version ${deployedVersion} is already deployed (required: ${requiredVersion}). Skipping deployment.`,
+          )
+          return
+        }
+        yield* Console.log(
+          `Upgrading bootstrap stack from version ${deployedVersion} to ${requiredVersion}...`,
+        )
+      } else {
+        yield* Console.log(
+          `No bootstrap stack found. Deploying version ${requiredVersion}...`,
+        )
+      }
 
       // Path to the CDK app that defines the bootstrap stack
       const cdkAppPath = getCdkAppPath()

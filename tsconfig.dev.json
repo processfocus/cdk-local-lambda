@@ -28,7 +28,9 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": false,
     "noPropertyAccessFromIndexSignature": false,
-    "exactOptionalPropertyTypes": false
+    "exactOptionalPropertyTypes": false,
+    "rootDir": ".",
+    "outDir": "lib"
   },
   "include": [
     "src/**/*.ts",
