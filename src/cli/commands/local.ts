@@ -1473,7 +1473,6 @@ const startCdkWatch = (
 
     const command = PlatformCommand.make("npx", ...args).pipe(
       PlatformCommand.env(env),
-      PlatformCommand.runInShell(true),
       PlatformCommand.stdin("inherit"),
     )
 

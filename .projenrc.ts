@@ -183,15 +183,17 @@ project.github
 // Specify files to include in npm package
 project.package.addField("files", ["lib", "LICENSE", "README.md"])
 
-// Add exports field for clean subpath imports
+// Add exports field for clean subpath imports (supports both ESM and CommonJS for ts-node)
 project.package.addField("exports", {
   ".": {
     types: "./lib/index.d.ts",
     import: "./lib/index.js",
+    require: "./lib/index.js",
   },
   "./bootstrap": {
     types: "./lib/aspect/live-lambda-bootstrap.d.ts",
     import: "./lib/aspect/live-lambda-bootstrap.js",
+    require: "./lib/aspect/live-lambda-bootstrap.js",
   },
   "./package.json": "./package.json",
 })
