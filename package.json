@@ -98,11 +98,13 @@
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
-      "import": "./lib/index.js"
+      "import": "./lib/index.js",
+      "require": "./lib/index.js"
     },
     "./bootstrap": {
       "types": "./lib/aspect/live-lambda-bootstrap.d.ts",
-      "import": "./lib/aspect/live-lambda-bootstrap.js"
+      "import": "./lib/aspect/live-lambda-bootstrap.js",
+      "require": "./lib/aspect/live-lambda-bootstrap.js"
     },
     "./package.json": "./package.json"
   },
