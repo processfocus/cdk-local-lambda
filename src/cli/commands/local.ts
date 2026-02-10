@@ -1661,7 +1661,9 @@ export const localCommand = Command.make(
   }) => {
     const logLevel = debug ? LogLevel.Debug : LogLevel.Info
     return Effect.gen(function* () {
-      yield* Effect.logInfo("[Local] Starting local Lambda development...")
+      yield* Effect.logInfo(
+        `[Local] Starting local Lambda development... (Node.js ${process.version})`,
+      )
 
       const profileValue = profile._tag === "Some" ? profile.value : undefined
       const regionValue = region._tag === "Some" ? region.value : undefined
