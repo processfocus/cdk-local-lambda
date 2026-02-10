@@ -17,6 +17,10 @@ This project provides similar live Lambda development capabilities to [SST v2's 
 
 SST v2 requires adopting SST's stack conventions and constructs. With cdk-local-lambda, you keep your existing CDK code as-is—just add the bootstrap import and apply the aspect.
 
+## Prerequisites
+
+- **Node.js 24** or later
+
 ## Installation
 
 ```bash
