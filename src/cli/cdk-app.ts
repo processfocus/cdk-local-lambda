@@ -31,8 +31,10 @@ async function loadBootstrapStack() {
     "bootstrap-stack.js",
   )
   if (fs.existsSync(libPath)) {
-    // @ts-expect-error - Path exists at runtime after compilation
-    return import("../../lib/bootstrap-stack/bootstrap-stack.js")
+    // Use a variable so TypeScript cannot statically resolve the import
+    // (avoids TS5055: would overwrite input file on incremental builds)
+    const modulePath = libPath
+    return import(modulePath)
   }
 
   // Fall back to source version (src/bootstrap-stack/) using direct path resolution

@@ -1147,6 +1147,8 @@ const ensureContainerStarted = (
 
 /**
  * Rebuild a Docker container after file changes.
+ * The new image is built first while the old container keeps serving requests.
+ * Once the image is ready, the old container is stopped and replaced.
  * Invocations arriving during rebuild will be queued and picked up by the new container.
  */
 const rebuildDockerContainer = (
@@ -1168,26 +1170,7 @@ const rebuildDockerContainer = (
     // Mark as rebuilding - invocations will still queue but we log it
     container.isRebuilding = true
 
-    yield* Effect.logDebug(`[Local] Rebuilding container for ${functionId}...`)
-
     const docker = yield* Docker
-
-    // Stop the existing container using Docker service
-    const containerId = container.containerName
-    yield* Effect.logInfo(
-      `[Local] Stopping container with name prefix: ${containerId}`,
-    )
-
-    const stopCount = yield* docker.stop(containerId).pipe(
-      Effect.scoped,
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          yield* Effect.logInfo(`Note: Container stop had issue: ${error}`)
-          return 0
-        }),
-      ),
-    )
-    yield* Effect.logDebug(`[Local] Stopped ${stopCount} container(s)`)
 
     // Resolve the context path
     const fn = container.fn
@@ -1198,7 +1181,9 @@ const rebuildDockerContainer = (
     // Determine platform from architecture
     const platform = fn.architecture === "arm64" ? "linux/arm64" : "linux/amd64"
 
-    // Rebuild the Docker image
+    // Build the new image first while the old container keeps serving
+    yield* Effect.logInfo(`[Local] Rebuilding container for ${functionId}...`)
+
     yield* docker
       .build({
         contextPath,
@@ -1216,15 +1201,29 @@ const rebuildDockerContainer = (
       imageConfig.cmd,
     )
 
-    // Restart the container by triggering container startup
-    // The existing fiber will have exited when we stopped the container
-    // We need to start a new one
+    // Image is ready - now stop the old container and start the new one
+    const containerId = container.containerName
+    yield* Effect.logInfo(`[Local] Replacing container for ${functionId}...`)
+
+    // Use fast timeout (1s) since the new image is ready - no need for graceful shutdown
+    const stopCount = yield* docker.stop(containerId, 1).pipe(
+      Effect.scoped,
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          yield* Effect.logInfo(`Note: Container stop had issue: ${error}`)
+          return 0
+        }),
+      ),
+    )
+    yield* Effect.logDebug(`[Local] Stopped ${stopCount} container(s)`)
+
+    // Start the replacement container
     const dockerRuntime = yield* docker.getRuntimeInfo()
     const runtimeApiHost = dockerRuntime.isDockerDesktop
       ? "host.docker.internal"
       : "runtime.api"
 
-    yield* Effect.logInfo(
+    yield* Effect.logDebug(
       `[Local] New container will connect to Runtime API at ${runtimeApiHost}:${container.port}`,
     )
 
@@ -1278,7 +1277,9 @@ const rebuildDockerContainer = (
     yield* Effect.sleep("2 seconds")
 
     container.isRebuilding = false
-    yield* Effect.logDebug(`[Local] Container rebuilt for ${functionId}`)
+    yield* Effect.logInfo(
+      `[Local] Container replaced for ${functionId} - new code is live`,
+    )
   }).pipe(Effect.provide(DockerLive))
 
 /**
