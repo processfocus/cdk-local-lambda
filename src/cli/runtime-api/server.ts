@@ -17,7 +17,15 @@ import * as HttpRouter from "@effect/platform/HttpRouter"
 import * as HttpServerRequest from "@effect/platform/HttpServerRequest"
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse"
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
-import { Effect, HashMap, Option, Queue, Ref, type Scope } from "effect"
+import {
+  Deferred,
+  Effect,
+  HashMap,
+  Option,
+  Queue,
+  Ref,
+  type Scope,
+} from "effect"
 import type {
   ExtensionEvent,
   ExtensionEventType,
@@ -60,6 +68,16 @@ export interface RuntimeApiState {
   extensions: Ref.Ref<HashMap.HashMap<string, ExtensionState>>
   /** Function metadata for extension registration */
   functionMetadata: FunctionMetadata
+  /**
+   * Deferred used to interrupt a stale /invocation/next poller.
+   *
+   * When a new poll arrives (e.g. after a node --watch restart), it
+   * creates a fresh Deferred, swaps it into this Ref, and completes
+   * the previous one. The old handler fiber is racing Queue.take
+   * against this Deferred, so completing it causes the old fiber to
+   * exit immediately (returning 503) without consuming from the queue.
+   */
+  pollInterrupt: Ref.Ref<Deferred.Deferred<void>>
 }
 
 /**
@@ -84,12 +102,15 @@ export const makeRuntimeApiState = (functionMetadata: FunctionMetadata) =>
       LambdaResponse | LambdaError | LambdaInitError
     >()
     const extensions = yield* Ref.make(HashMap.empty<string, ExtensionState>())
+    const initialDeferred = yield* Deferred.make<void>()
+    const pollInterrupt = yield* Ref.make(initialDeferred)
 
     return {
       invocationQueue,
       responseQueue,
       extensions,
       functionMetadata,
+      pollInterrupt,
     } satisfies RuntimeApiState
   })
 
@@ -117,22 +138,35 @@ const DEFAULT_POLL_TIMEOUT_MS = 240_000 // 4 minutes
 
 /**
  * Handle GET /2018-06-01/runtime/invocation/next
- * Polls for an invocation with a bounded timeout to handle idle containers gracefully.
- * This ensures that if no invocations arrive within the timeout, the container
- * exits cleanly rather than being killed by an HTTP timeout.
  *
- * When the timeout expires, we return a 503 Service Unavailable which signals
- * to the Lambda RIC that it should exit. The container will be restarted
- * automatically when the next invocation arrives.
+ * Polls for an invocation using a loop with three exit conditions:
+ *   1. An invocation is available in the queue
+ *   2. A newer poller arrived (Deferred completed → node --watch restart)
+ *   3. Idle poll timeout expired (→ 503 so the RIC exits gracefully)
+ *
+ * The Deferred-based interrupt prevents stale handler fibers from stealing
+ * invocations: when a new /invocation/next request arrives it completes the
+ * previous Deferred, and the old fiber detects this on its next poll cycle
+ * (within 100ms).  If the stale fiber already took an invocation from the
+ * queue, it re-queues it before exiting.
+ *
+ * The 100ms poll loop also ensures the fiber wakes up periodically, which
+ * is important for clean scope cleanup (afterEach in tests, daemon shutdown).
  */
 const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
   Effect.gen(function* () {
     yield* Effect.logDebug("Container polling for next invocation")
 
+    // Create a fresh interrupt Deferred for THIS poll request and swap it in.
+    // Completing the previous Deferred tells any stale poller to exit.
+    const myInterrupt = yield* Deferred.make<void>()
+    const oldInterrupt = yield* Ref.getAndSet(state.pollInterrupt, myInterrupt)
+    yield* Deferred.succeed(oldInterrupt, void 0)
+
     const startTime = Date.now()
 
-    // Poll with timeout instead of blocking indefinitely
-    // This allows us to detect connection issues and keep the invocation in the queue
+    // Poll with timeout instead of blocking indefinitely.
+    // The 100ms sleep gives periodic interruption points for clean shutdown.
     let invocation: LambdaInvocation | null = null
 
     while (invocation === null) {
@@ -141,8 +175,6 @@ const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
         yield* Effect.logDebug(
           "Invocation poll timeout - returning 503 to trigger container exit",
         )
-        // Return 503 Service Unavailable to signal the RIC to exit gracefully
-        // This is expected behavior for idle containers in local development
         return HttpServerResponse.empty({
           status: 503,
           headers: Headers.fromInput({
@@ -151,10 +183,40 @@ const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
         })
       }
 
-      // Try to take from queue with a short timeout
+      // Check if a newer poller arrived (e.g. worker restarted via --watch)
+      const interrupted = yield* Deferred.isDone(myInterrupt)
+      if (interrupted) {
+        yield* Effect.logDebug(
+          "Stale poller detected (newer connection arrived) - exiting",
+        )
+        return HttpServerResponse.empty({
+          status: 503,
+          headers: Headers.fromInput({
+            "Content-Type": "application/json",
+          }),
+        })
+      }
+
+      // Try to take from queue (non-blocking)
       const result = yield* Queue.poll(state.invocationQueue)
 
       if (Option.isSome(result)) {
+        // Took an invocation — but check the Deferred again.  If a newer
+        // poller arrived between our last check and now, re-queue so the
+        // new poller gets it.
+        const interruptedAfterTake = yield* Deferred.isDone(myInterrupt)
+        if (interruptedAfterTake) {
+          yield* Effect.logDebug(
+            "Stale poller took invocation after new connection arrived - re-queueing",
+          )
+          yield* Queue.offer(state.invocationQueue, result.value)
+          return HttpServerResponse.empty({
+            status: 503,
+            headers: Headers.fromInput({
+              "Content-Type": "application/json",
+            }),
+          })
+        }
         invocation = result.value
       } else {
         // Queue is empty, wait a bit before retrying

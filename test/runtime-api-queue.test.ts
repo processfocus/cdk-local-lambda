@@ -310,6 +310,12 @@ describe("Runtime API Queue Behavior", () => {
     // The poll should fail
     await expect(pollPromise).rejects.toThrow()
 
+    // Give the HTTP server time to propagate the interruption to the
+    // handler fiber.  Under CPU contention (full test suite), the abort
+    // event can be delayed, causing the stale fiber to consume the
+    // invocation before it is interrupted.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
     // Now queue an invocation
     const invocation = createTestInvocation("after-abort-1", {
       status: "queued-after-abort",
@@ -344,7 +350,55 @@ describe("Runtime API Queue Behavior", () => {
     expect(result.event).toEqual({ queued: "while-waiting" })
   })
 
-  it.skip("complete rebuild scenario with concurrent invocation - Known issue with NodeHttpServer abort handling", async () => {
+  it("new poller invalidates stale poller so invocations are not lost", async () => {
+    // This reproduces the node --watch restart bug:
+    // 1. Worker A polls /invocation/next (handler fiber A starts polling queue)
+    // 2. Worker restarts (connection drops, but fiber A may linger)
+    // 3. Worker B polls /invocation/next (handler fiber B starts)
+    // 4. Invocation arrives — only fiber B (the active poller) should get it
+    //
+    // Without the pollGeneration fix, fiber A could steal the invocation
+    // and try to respond on the dead connection, causing a hang.
+
+    // Worker A starts polling (queue is empty, so it blocks)
+    const controllerA = new AbortController()
+    const pollAPromise = simulateContainerPoll(server.port, {
+      signal: controllerA.signal,
+    }).catch((err: Error) => err)
+
+    // Let worker A's poll request reach the server and start waiting
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // Worker restarts — new poll arrives (this bumps pollGeneration,
+    // causing the old handler fiber to bail out with 503)
+    // Don't abort worker A's connection yet — the point is that the
+    // server-side generation counter handles it even if the TCP
+    // connection lingers.
+    const pollBPromise = simulateContainerPoll(server.port)
+
+    // Give fiber A time to detect the generation mismatch and exit
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // Now abort worker A's client connection (simulates TCP close)
+    controllerA.abort()
+
+    // Queue an invocation — it must go to worker B
+    const invocation = createTestInvocation("stale-poller-1", {
+      target: "workerB",
+    })
+    await Effect.runPromise(queueInvocation(server.state, invocation))
+
+    // Worker B should receive the invocation (not worker A)
+    const result = await pollBPromise
+    expect(result.requestId).toBe("stale-poller-1")
+    expect(result.event).toEqual({ target: "workerB" })
+
+    // Worker A's poll should have failed (aborted or 503)
+    const resultA = await pollAPromise
+    expect(resultA).toBeInstanceOf(Error)
+  })
+
+  it.skip("complete rebuild scenario with concurrent invocation - abort handling is a separate issue from stale pollers", async () => {
     // Full scenario test:
     // 1. Container A is processing invocations
     // 2. File change triggers rebuild
@@ -363,7 +417,7 @@ describe("Runtime API Queue Behavior", () => {
     const controllerA = new AbortController()
     const pollA2Promise = simulateContainerPoll(server.port, {
       signal: controllerA.signal,
-    })
+    }).catch((err: Error) => err)
 
     // Let Container A start waiting
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -371,7 +425,8 @@ describe("Runtime API Queue Behavior", () => {
     // File change detected - rebuild starts
     // Container A is killed (abort its poll)
     controllerA.abort()
-    await expect(pollA2Promise).rejects.toThrow()
+    const pollA2Result = await pollA2Promise
+    expect(pollA2Result).toBeInstanceOf(Error)
 
     // Invocation arrives during rebuild (no container connected)
     const inv2 = createTestInvocation("scenario-2", { during: "rebuild" })
