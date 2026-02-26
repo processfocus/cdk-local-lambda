@@ -92,6 +92,7 @@ const project = new typescript.TypeScriptProject({
     "@aws-sdk/client-lambda",
     "ws",
     "chokidar",
+    "exponential-backoff",
   ],
   devDeps: [
     "@effect/language-service",

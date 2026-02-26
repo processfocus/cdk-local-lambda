@@ -108,6 +108,10 @@
       "type": "runtime"
     },
     {
+      "name": "exponential-backoff",
+      "type": "runtime"
+    },
+    {
       "name": "ws",
       "type": "runtime"
     }

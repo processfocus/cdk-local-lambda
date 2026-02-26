@@ -10,7 +10,30 @@ import { Sha256 } from "@aws-crypto/sha256-js"
 import { defaultProvider } from "@aws-sdk/credential-provider-node"
 import { HttpRequest } from "@aws-sdk/protocol-http"
 import { SignatureV4 } from "@aws-sdk/signature-v4"
+import { backOff } from "exponential-backoff"
 import WebSocket from "ws"
+
+const PUBLISH_MAX_ATTEMPTS = 4
+const PUBLISH_RETRY_STARTING_DELAY_MS = 100
+const PUBLISH_RETRY_MAX_DELAY_MS = 2_000
+
+class PublishError extends Error {
+  readonly retryable: boolean
+
+  constructor(
+    message: string,
+    options: {
+      retryable: boolean
+    },
+  ) {
+    super(message)
+    this.name = "PublishError"
+    this.retryable = options.retryable
+  }
+}
+
+const isRetryableStatusCode = (statusCode: number): boolean =>
+  statusCode === 429 || statusCode >= 500
 
 export interface AppSyncEventsClientConfig {
   httpEndpoint: string
@@ -116,7 +139,8 @@ export class AppSyncEventsClient {
       body,
     })
 
-    // Sign the request
+    // Make the HTTP request - use the correct endpoint with /event path
+    const publishUrl = `${url.protocol}//${url.hostname}${path}`
     const signer = new SignatureV4({
       credentials: defaultProvider(),
       region: this.region,
@@ -124,19 +148,64 @@ export class AppSyncEventsClient {
       sha256: Sha256,
     })
 
-    const signedRequest = await signer.sign(request)
+    let attempts = 0
 
-    // Make the HTTP request - use the correct endpoint with /event path
-    const publishUrl = `${url.protocol}//${url.hostname}${path}`
-    const response = await fetch(publishUrl, {
-      method: "POST",
-      headers: signedRequest.headers as Record<string, string>,
-      body,
-    })
+    try {
+      await backOff(
+        async () => {
+          attempts += 1
 
-    if (!response.ok) {
-      const text = await response.text()
-      throw new Error(`Failed to publish event: ${response.status} ${text}`)
+          // Sign on each attempt so SigV4 date/signature remain fresh
+          const signedRequest = await signer.sign(request)
+
+          const response = await fetch(publishUrl, {
+            method: "POST",
+            headers: signedRequest.headers as Record<string, string>,
+            body,
+          })
+
+          if (!response.ok) {
+            const text = await response.text()
+            throw new PublishError(
+              `Failed to publish event: ${response.status} ${text}`,
+              {
+                retryable: isRetryableStatusCode(response.status),
+              },
+            )
+          }
+        },
+        {
+          numOfAttempts: PUBLISH_MAX_ATTEMPTS,
+          startingDelay: PUBLISH_RETRY_STARTING_DELAY_MS,
+          maxDelay: PUBLISH_RETRY_MAX_DELAY_MS,
+          timeMultiple: 2,
+          jitter: "full",
+          retry: (error: unknown) => {
+            if (error instanceof PublishError) {
+              if (error.retryable) {
+                console.warn(`[Bridge] Retrying publish: ${error.message}`)
+              }
+              return error.retryable
+            }
+            if (
+              error instanceof TypeError ||
+              (error instanceof Error && error.name === "AbortError")
+            ) {
+              console.warn(
+                `[Bridge] Retrying publish after transport error: ${error}`,
+              )
+              return true
+            }
+            return false
+          },
+        },
+      )
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `Failed to publish event after ${attempts} attempt(s): ${errorMessage}`,
+      )
     }
   }
 

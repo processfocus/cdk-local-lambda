@@ -9,9 +9,29 @@ import { Sha256 } from "@aws-crypto/sha256-js"
 import { defaultProvider } from "@aws-sdk/credential-provider-node"
 import { HttpRequest } from "@aws-sdk/protocol-http"
 import { SignatureV4 } from "@aws-sdk/signature-v4"
-import { Effect, Stream } from "effect"
+import { Effect, Schedule, Stream } from "effect"
 import WebSocket from "ws"
 import type { InvocationMessage, ResponseMessage } from "../../shared/types.js"
+
+const PUBLISH_MAX_ATTEMPTS = 4
+
+class PublishError extends Error {
+  readonly retryable: boolean
+
+  constructor(
+    message: string,
+    options: {
+      retryable: boolean
+    },
+  ) {
+    super(message)
+    this.name = "PublishError"
+    this.retryable = options.retryable
+  }
+}
+
+const isRetryableStatusCode = (statusCode: number): boolean =>
+  statusCode === 429 || statusCode >= 500
 
 /**
  * Configuration for the Effect AppSync client.
@@ -168,29 +188,64 @@ export const makeAppSyncClient = (config: AppSyncClientConfig) => {
         body,
       })
 
-      const signedRequest = yield* signRequest(request)
-
       const publishUrl = `${url.protocol}//${url.hostname}${path}`
-      const response = yield* Effect.tryPromise({
-        try: async () =>
-          fetch(publishUrl, {
-            method: "POST",
-            headers: signedRequest.headers as Record<string, string>,
-            body,
-          }),
-        catch: (error) =>
-          new Error(`Failed to publish event: ${String(error)}`),
-      })
 
-      if (!response.ok) {
-        const text = yield* Effect.tryPromise({
-          try: () => response.text(),
-          catch: () => new Error("Failed to read response"),
+      let attempts = 0
+
+      yield* Effect.gen(function* () {
+        attempts += 1
+
+        // Sign on each attempt so SigV4 date/signature remain fresh
+        const signedRequest = yield* signRequest(request)
+
+        const response = yield* Effect.tryPromise({
+          try: async () =>
+            fetch(publishUrl, {
+              method: "POST",
+              headers: signedRequest.headers as Record<string, string>,
+              body,
+            }),
+          catch: (error) =>
+            new PublishError(`Failed to publish event: ${String(error)}`, {
+              retryable: true,
+            }),
         })
-        yield* Effect.fail(
-          new Error(`Failed to publish event: ${response.status} ${text}`),
-        )
-      }
+
+        if (!response.ok) {
+          const text = yield* Effect.tryPromise({
+            try: () => response.text(),
+            catch: () => new Error("Failed to read response"),
+          })
+          return yield* Effect.fail(
+            new PublishError(
+              `Failed to publish event: ${response.status} ${text}`,
+              {
+                retryable: isRetryableStatusCode(response.status),
+              },
+            ),
+          )
+        }
+      }).pipe(
+        Effect.retry({
+          times: PUBLISH_MAX_ATTEMPTS - 1,
+          schedule: Schedule.exponential("100 millis").pipe(Schedule.jittered),
+          while: (error) => {
+            if (error instanceof PublishError && error.retryable) {
+              return Effect.logDebug(
+                `[Local] Retrying AppSync publish: ${error.message}`,
+              ).pipe(Effect.as(true))
+            }
+            return false
+          },
+        }),
+        Effect.catchAll((error) =>
+          Effect.fail(
+            new Error(
+              `Failed to publish event after ${attempts} attempt(s): ${error.message}`,
+            ),
+          ),
+        ),
+      )
 
       yield* Effect.logDebug(`Published to ${channel}`)
     })
