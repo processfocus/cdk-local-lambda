@@ -17,6 +17,12 @@ const PORT = Number(process.env.PORT) || 8080
 const server = Bun.serve({
   port: PORT,
   async fetch(request: Request): Promise<Response> {
+    // Readiness check endpoint for Lambda Web Adapter
+    const url = new URL(request.url)
+    if (url.pathname === "/healthz") {
+      return new Response("OK", { status: 200 })
+    }
+
     // Lambda Web Adapter sends the event as POST body to the root path
     // and includes Lambda context in headers
     const requestId =

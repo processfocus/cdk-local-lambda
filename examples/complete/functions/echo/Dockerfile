@@ -16,5 +16,7 @@ EXPOSE 8080
 
 # Lambda Web Adapter expects the server to listen on PORT
 ENV PORT=8080
+# Use a dedicated readiness check path so health checks don't hit the handler
+ENV READINESS_CHECK_PATH=/healthz
 
 CMD ["bun", "handler.ts"]
