@@ -59,12 +59,30 @@ function createTestInvocation(
  */
 async function simulateContainerPoll(
   port: number,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<{ event: unknown; requestId: string }> {
-  const response = await fetch(
-    `http://localhost:${port}/2018-06-01/runtime/invocation/next`,
-    { signal: options.signal },
-  )
+  const timeoutMs = options.timeoutMs ?? 10_000
+  const controller = new AbortController()
+
+  const abortFromCaller = () => {
+    controller.abort()
+  }
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true })
+
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  let response: Response
+  try {
+    response = await fetch(
+      `http://localhost:${port}/2018-06-01/runtime/invocation/next`,
+      { signal: controller.signal },
+    )
+  } finally {
+    clearTimeout(timeoutId)
+    options.signal?.removeEventListener("abort", abortFromCaller)
+  }
 
   if (!response.ok) {
     throw new Error(`Poll failed with status ${response.status}`)
