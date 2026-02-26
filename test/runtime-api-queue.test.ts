@@ -59,12 +59,30 @@ function createTestInvocation(
  */
 async function simulateContainerPoll(
   port: number,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<{ event: unknown; requestId: string }> {
-  const response = await fetch(
-    `http://localhost:${port}/2018-06-01/runtime/invocation/next`,
-    { signal: options.signal },
-  )
+  const timeoutMs = options.timeoutMs ?? 10_000
+  const controller = new AbortController()
+
+  const abortFromCaller = () => {
+    controller.abort()
+  }
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true })
+
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  let response: Response
+  try {
+    response = await fetch(
+      `http://localhost:${port}/2018-06-01/runtime/invocation/next`,
+      { signal: controller.signal },
+    )
+  } finally {
+    clearTimeout(timeoutId)
+    options.signal?.removeEventListener("abort", abortFromCaller)
+  }
 
   if (!response.ok) {
     throw new Error(`Poll failed with status ${response.status}`)
@@ -299,7 +317,7 @@ describe("Runtime API Queue Behavior", () => {
     // Start polling (this will block since queue is empty)
     const pollPromise = simulateContainerPoll(server.port, {
       signal: controller.signal,
-    })
+    }).catch((error: Error) => error)
 
     // Let the poll start waiting
     await new Promise((resolve) => setTimeout(resolve, 200))
@@ -308,7 +326,8 @@ describe("Runtime API Queue Behavior", () => {
     controller.abort()
 
     // The poll should fail
-    await expect(pollPromise).rejects.toThrow()
+    const pollResult = await pollPromise
+    expect(pollResult).toBeInstanceOf(Error)
 
     // Give the HTTP server time to propagate the interruption to the
     // handler fiber.  Under CPU contention (full test suite), the abort
