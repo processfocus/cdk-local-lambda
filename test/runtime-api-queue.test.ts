@@ -317,7 +317,7 @@ describe("Runtime API Queue Behavior", () => {
     // Start polling (this will block since queue is empty)
     const pollPromise = simulateContainerPoll(server.port, {
       signal: controller.signal,
-    })
+    }).catch((error: Error) => error)
 
     // Let the poll start waiting
     await new Promise((resolve) => setTimeout(resolve, 200))
@@ -326,7 +326,8 @@ describe("Runtime API Queue Behavior", () => {
     controller.abort()
 
     // The poll should fail
-    await expect(pollPromise).rejects.toThrow()
+    const pollResult = await pollPromise
+    expect(pollResult).toBeInstanceOf(Error)
 
     // Give the HTTP server time to propagate the interruption to the
     // handler fiber.  Under CPU contention (full test suite), the abort
