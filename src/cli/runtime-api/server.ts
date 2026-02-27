@@ -154,62 +154,36 @@ const DEFAULT_POLL_TIMEOUT_MS = 240_000 // 4 minutes
  * is important for clean scope cleanup (afterEach in tests, daemon shutdown).
  */
 const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
-  Effect.gen(function* () {
-    yield* Effect.logDebug("Container polling for next invocation")
+  Effect.suspend(() => {
+    // Per-request mutable state used by the onInterrupt finalizer below.
+    // Safe because JS is single-threaded and Effect.suspend creates a fresh
+    // closure for every execution of this Effect.
+    let takenInvocation: LambdaInvocation | null = null
 
-    // Create a fresh interrupt Deferred for THIS poll request and swap it in.
-    // Completing the previous Deferred tells any stale poller to exit.
-    const myInterrupt = yield* Deferred.make<void>()
-    const oldInterrupt = yield* Ref.getAndSet(state.pollInterrupt, myInterrupt)
-    yield* Deferred.succeed(oldInterrupt, void 0)
+    return Effect.gen(function* () {
+      yield* Effect.logDebug("Container polling for next invocation")
 
-    const startTime = Date.now()
+      // Create a fresh interrupt Deferred for THIS poll request and swap it in.
+      // Completing the previous Deferred tells any stale poller to exit.
+      const myInterrupt = yield* Deferred.make<void>()
+      const oldInterrupt = yield* Ref.getAndSet(
+        state.pollInterrupt,
+        myInterrupt,
+      )
+      yield* Deferred.succeed(oldInterrupt, void 0)
 
-    // Poll with timeout instead of blocking indefinitely.
-    // The 100ms sleep gives periodic interruption points for clean shutdown.
-    let invocation: LambdaInvocation | null = null
+      const startTime = Date.now()
 
-    while (invocation === null) {
-      // Check if we've exceeded the timeout
-      if (Date.now() - startTime > pollTimeoutMs) {
-        yield* Effect.logDebug(
-          "Invocation poll timeout - returning 503 to trigger container exit",
-        )
-        return HttpServerResponse.empty({
-          status: 503,
-          headers: Headers.fromInput({
-            "Content-Type": "application/json",
-          }),
-        })
-      }
+      // Poll with timeout instead of blocking indefinitely.
+      // The 100ms sleep gives periodic interruption points for clean shutdown.
+      let invocation: LambdaInvocation | null = null
 
-      // Check if a newer poller arrived (e.g. worker restarted via --watch)
-      const interrupted = yield* Deferred.isDone(myInterrupt)
-      if (interrupted) {
-        yield* Effect.logDebug(
-          "Stale poller detected (newer connection arrived) - exiting",
-        )
-        return HttpServerResponse.empty({
-          status: 503,
-          headers: Headers.fromInput({
-            "Content-Type": "application/json",
-          }),
-        })
-      }
-
-      // Try to take from queue (non-blocking)
-      const result = yield* Queue.poll(state.invocationQueue)
-
-      if (Option.isSome(result)) {
-        // Took an invocation — but check the Deferred again.  If a newer
-        // poller arrived between our last check and now, re-queue so the
-        // new poller gets it.
-        const interruptedAfterTake = yield* Deferred.isDone(myInterrupt)
-        if (interruptedAfterTake) {
+      while (invocation === null) {
+        // Check if we've exceeded the timeout
+        if (Date.now() - startTime > pollTimeoutMs) {
           yield* Effect.logDebug(
-            "Stale poller took invocation after new connection arrived - re-queueing",
+            "Invocation poll timeout - returning 503 to trigger container exit",
           )
-          yield* Queue.offer(state.invocationQueue, result.value)
           return HttpServerResponse.empty({
             status: 503,
             headers: Headers.fromInput({
@@ -217,27 +191,87 @@ const handleInvocationNext = (state: RuntimeApiState, pollTimeoutMs: number) =>
             }),
           })
         }
-        invocation = result.value
-      } else {
-        // Queue is empty, wait a bit before retrying
-        yield* Effect.sleep("100 millis")
+
+        // Check if a newer poller arrived (e.g. worker restarted via --watch)
+        const interrupted = yield* Deferred.isDone(myInterrupt)
+        if (interrupted) {
+          yield* Effect.logDebug(
+            "Stale poller detected (newer connection arrived) - exiting",
+          )
+          return HttpServerResponse.empty({
+            status: 503,
+            headers: Headers.fromInput({
+              "Content-Type": "application/json",
+            }),
+          })
+        }
+
+        // Try to take from queue (non-blocking)
+        const result = yield* Queue.poll(state.invocationQueue)
+
+        if (Option.isSome(result)) {
+          // Track what we took so onInterrupt can re-queue it
+          takenInvocation = result.value
+
+          // Took an invocation — but check the Deferred again.  If a newer
+          // poller arrived between our last check and now, re-queue so the
+          // new poller gets it.
+          const interruptedAfterTake = yield* Deferred.isDone(myInterrupt)
+          if (interruptedAfterTake) {
+            yield* Effect.logDebug(
+              "Stale poller took invocation after new connection arrived - re-queueing",
+            )
+            yield* Queue.offer(state.invocationQueue, result.value)
+            takenInvocation = null // Already re-queued manually
+            return HttpServerResponse.empty({
+              status: 503,
+              headers: Headers.fromInput({
+                "Content-Type": "application/json",
+              }),
+            })
+          }
+          invocation = result.value
+        } else {
+          // Queue is empty, wait a bit before retrying
+          yield* Effect.sleep("100 millis")
+        }
       }
-    }
 
-    yield* Effect.logDebug(
-      `Returning invocation ${invocation.requestId} to container`,
-    )
+      yield* Effect.logDebug(
+        `Returning invocation ${invocation.requestId} to container`,
+      )
 
-    return yield* HttpServerResponse.json(invocation.event, {
-      status: 200,
-      headers: Headers.fromInput({
-        "Lambda-Runtime-Aws-Request-Id": invocation.requestId,
-        "Lambda-Runtime-Deadline-Ms": String(invocation.deadlineMs),
-        "Lambda-Runtime-Invoked-Function-Arn": invocation.invokedFunctionArn,
-        "Lambda-Runtime-Log-Group-Name": invocation.logGroupName,
-        "Lambda-Runtime-Log-Stream-Name": invocation.logStreamName,
+      const response = yield* HttpServerResponse.json(invocation.event, {
+        status: 200,
+        headers: Headers.fromInput({
+          "Lambda-Runtime-Aws-Request-Id": invocation.requestId,
+          "Lambda-Runtime-Deadline-Ms": String(invocation.deadlineMs),
+          "Lambda-Runtime-Invoked-Function-Arn": invocation.invokedFunctionArn,
+          "Lambda-Runtime-Log-Group-Name": invocation.logGroupName,
+          "Lambda-Runtime-Log-Stream-Name": invocation.logStreamName,
+        }),
+      })
+
+      // Response built successfully — clear the re-queue guard so the
+      // onInterrupt finalizer does not put it back.
+      takenInvocation = null
+      return response
+    }).pipe(
+      Effect.onInterrupt(() => {
+        if (takenInvocation !== null) {
+          const inv = takenInvocation
+          takenInvocation = null
+          return Queue.offer(state.invocationQueue, inv).pipe(
+            Effect.tap(() =>
+              Effect.logDebug(
+                `Re-queued invocation ${inv.requestId} after handler fiber interrupted`,
+              ),
+            ),
+          )
+        }
+        return Effect.void
       }),
-    })
+    )
   })
 
 /**
