@@ -309,7 +309,16 @@ describe("Runtime API Queue Behavior", () => {
 
   it("poll request can be aborted without losing queued invocations", async () => {
     // This is the key behavior: if a container's poll request is aborted
-    // (e.g., during container shutdown), invocations should NOT be lost
+    // (e.g., during container shutdown), invocations should NOT be lost.
+    //
+    // Note: @effect/platform-node does not interrupt handler fibers on
+    // client disconnect, so the stale server-side fiber from the aborted
+    // poll keeps running.  The pollInterrupt mechanism handles this: the
+    // new container's poll bumps the generation counter, causing the stale
+    // fiber to bail out (and re-queue any taken invocation).
+    //
+    // To make the test deterministic we start the replacement poll BEFORE
+    // queuing the invocation, ensuring the stale fiber is invalidated.
 
     // Start a poll that we'll abort
     const controller = new AbortController()
@@ -329,20 +338,25 @@ describe("Runtime API Queue Behavior", () => {
     const pollResult = await pollPromise
     expect(pollResult).toBeInstanceOf(Error)
 
-    // Give the HTTP server time to propagate the interruption to the
-    // handler fiber.  Under CPU contention (full test suite), the abort
-    // event can be delayed, causing the stale fiber to consume the
-    // invocation before it is interrupted.
+    // Give the HTTP server time to process the abort
     await new Promise((resolve) => setTimeout(resolve, 200))
 
-    // Now queue an invocation
+    // Start the replacement container's poll FIRST — this bumps the
+    // pollInterrupt generation, invalidating the stale handler fiber
+    // from the aborted connection.
+    const resultPromise = simulateContainerPoll(server.port)
+
+    // Let the new poll reach the server and bump pollInterrupt
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // Now queue an invocation — only the new poller can receive it
     const invocation = createTestInvocation("after-abort-1", {
       status: "queued-after-abort",
     })
     await Effect.runPromise(queueInvocation(server.state, invocation))
 
-    // A new container should be able to pick it up
-    const result = await simulateContainerPoll(server.port)
+    // The new container should pick it up
+    const result = await resultPromise
     expect(result.requestId).toBe("after-abort-1")
     expect(result.event).toEqual({ status: "queued-after-abort" })
   })
