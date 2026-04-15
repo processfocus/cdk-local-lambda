@@ -48,10 +48,6 @@
       "type": "build"
     },
     {
-      "name": "tsx",
-      "type": "build"
-    },
-    {
       "name": "typescript",
       "type": "build"
     },
@@ -109,6 +105,10 @@
     },
     {
       "name": "exponential-backoff",
+      "type": "runtime"
+    },
+    {
+      "name": "tsx",
       "type": "runtime"
     },
     {
