@@ -13,6 +13,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process"
 import * as fs from "node:fs"
+import { createRequire } from "node:module"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -617,7 +618,7 @@ const processContainerResponses = (
 
 /**
  * Start a Node.js worker process for a function.
- * Spawns Bun to run the runtime wrapper with the handler path.
+ * Spawns Node.js with tsx preloaded to run the runtime wrapper.
  * The worker continuously polls our Runtime API for invocations.
  */
 const startNodejsWorker = (
@@ -645,6 +646,9 @@ const startNodejsWorker = (
       "nodejs-runtime.js",
     )
 
+    const require = createRequire(import.meta.url)
+    const tsxLoaderPath = require.resolve("tsx")
+
     // Use current Node.js executable for pure env isolation (no PATH dependency)
     const nodePath = process.execPath
 
@@ -666,14 +670,17 @@ const startNodejsWorker = (
     )
     yield* Effect.logDebug(`[Local] Handler: ${fn.localHandler}`)
 
-    // Spawn Node.js with --watch to automatically restart when handler files change
-    // This enables hot-reload without needing to restart the daemon
-    // Use current Node.js executable for pure env isolation (no PATH dependency)
-    const workerProcess = spawn(nodePath, ["--watch", runtimeWrapperPath], {
-      cwd: projectRoot,
-      env: workerEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
+    // Preload tsx so direct source imports work for TypeScript workspaces.
+    // Keep using the current Node.js executable to avoid PATH dependencies.
+    const workerProcess = spawn(
+      nodePath,
+      ["--import", tsxLoaderPath, "--watch", runtimeWrapperPath],
+      {
+        cwd: projectRoot,
+        env: workerEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    )
 
     // Pattern to parse Lambda log format: TIMESTAMP\tREQUEST_ID\tLEVEL\tMESSAGE
     // Lambda uses tabs between fields. Captures: [1] = request ID, [2] = level + message

@@ -93,6 +93,7 @@ const project = new typescript.TypeScriptProject({
     "ws",
     "chokidar",
     "exponential-backoff",
+    "tsx",
   ],
   devDeps: [
     "@effect/language-service",
@@ -101,7 +102,6 @@ const project = new typescript.TypeScriptProject({
     "@types/node@24",
     "@types/ws",
     "husky",
-    "tsx", // Use tsx instead of ts-node (ts-node fails with ESM + Node 18.19+)
   ],
 })
 
